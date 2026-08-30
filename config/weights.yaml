@@ -1,0 +1,119 @@
+# All parent weights sum to 1. Leaf weights sum to 1 within each block.
+
+overall:
+  Q: 0.50
+  M: 0.20
+  O: 0.20
+  V: 0.10
+
+quality:
+  U: 0.45
+  F: 0.20
+  R: 0.20
+  T: 0.15
+
+underlying:
+  MID:
+    npxgi90: 0.25
+    npxg90: 0.10
+    npxa90: 0.10
+    shots_in_box90: 0.10
+    key_passes90: 0.10
+    defcon_hit_rate: 0.15
+    xgchain90: 0.10
+    chance_quality90: 0.10
+  FWD:
+    npxgi90: 0.40
+    npxg90: 0.10
+    npxa90: 0.10
+    shots_in_box90: 0.10
+    key_passes90: 0.10
+    xgchain90: 0.10
+    chance_quality90: 0.10
+  DEF:
+    p_clean_sheet: 0.35
+    team_defence: 0.25
+    defcon_hit_rate: 0.10
+    npxgi90: 0.10
+    shots_in_box90: 0.05
+    key_passes90: 0.05
+    chance_quality90: 0.10
+  GK:
+    p_clean_sheet: 0.40
+    saves90: 0.25
+    shot_stopping: 0.10
+    fpl_output: 0.15
+    penalty_exposure: 0.10
+
+fpl_output:
+  points90: 0.40
+  goals90: 0.15
+  assists90: 0.15
+  bonus90: 0.15
+  bps90: 0.15
+
+role:
+  pitch_position: 0.25
+  attacking_involvement: 0.25
+  set_pieces: 0.15
+  penalties: 0.20
+  advanced_central: 0.10
+  tactical_importance: 0.05
+
+team_mix:
+  FWD: {attack: 0.9, defence: 0.1}
+  MID: {attack: 0.8, defence: 0.2}
+  DEF: {attack: 0.2, defence: 0.8}
+  GK: {attack: 0.1, defence: 0.9}
+
+minutes:
+  start_pct: 0.40
+  minutes_pct: 0.25
+  rotation: 0.20
+  availability: 0.15
+
+form:
+  last5: 0.6
+  last10: 0.3
+  season: 0.1
+
+fixtures:
+  horizon: [0.40, 0.25, 0.15, 0.10, 0.10]
+  FWD:
+    opp_defence: 0.55
+    opp_attack: 0.05
+    home_away: 0.15
+    team_xg_context: 0.20
+    p_cs: 0.05
+  MID:
+    opp_defence: 0.40
+    opp_attack: 0.15
+    home_away: 0.15
+    team_xg_context: 0.20
+    p_cs: 0.10
+  DEF:
+    opp_defence: 0.15
+    opp_attack: 0.40
+    home_away: 0.15
+    team_xg_context: 0.10
+    p_cs: 0.20
+  GK:
+    opp_defence: 0.15
+    opp_attack: 0.40
+    home_away: 0.15
+    team_xg_context: 0.10
+    p_cs: 0.20
+
+value:
+  xpts_per_m: 0.50
+  quality_per_m: 0.30
+  premium: 0.20
+
+upside:
+  finishing: 0.20
+  creation: 0.15
+  minutes_trend: 0.20
+  team_trend: 0.15
+  role_change: 0.10
+  price: 0.10
+  ownership: 0.10
