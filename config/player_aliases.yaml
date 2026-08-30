@@ -1,0 +1,63 @@
+# Manual FPL ↔ Understat links. Applied before automatic matching.
+# Prefer understat_id + fpl_id. Names are for your review only.
+#
+# After editing, rebuild the map:
+#   fpl-model id-map --season 2025-26
+
+aliases:
+  - understat_id: 2496
+    fpl_id: 421
+    understat_name: Rodri
+    fpl_name: Rodrigo 'Rodri' Hernandez Cascante
+  - understat_id: 10715
+    fpl_id: 673
+    understat_name: João Palhinha
+    fpl_name: João Maria Lobo Alves Palhares Costa Palhinha Gonçalves
+  - understat_id: 11384
+    fpl_id: 646
+    understat_name: João Gomes
+    fpl_name: João Victor Gomes da Silva
+  - understat_id: 7365
+    fpl_id: 612
+    understat_name: Lucas Paquetá
+    fpl_name: Lucas Tolentino Coelho de Lima
+  - understat_id: 12756
+    fpl_id: 635
+    understat_name: Rodrigo Gomes
+    fpl_name: Rodrigo Martins Gomes
+  - understat_id: 8845
+    fpl_id: 642
+    understat_name: Hee-Chan Hwang
+    fpl_name: Hwang Hee-chan
+  - understat_id: 9024
+    fpl_id: 712
+    understat_name: Yeremi Pino
+    fpl_name: Yéremy Pino Santos
+  - understat_id: 11735
+    fpl_id: 415
+    understat_name: Sávio
+    fpl_name: Sávio Moreira de Oliveira
+  - understat_id: 11772
+    fpl_id: 129
+    understat_name: Yehor Yarmolyuk
+    fpl_name: Yehor Yarmoliuk
+  - understat_id: 12168
+    fpl_id: 713
+    understat_name: Alejandro Jiménez
+    fpl_name: Álex Jiménez Sánchez
+  - understat_id: 5061
+    fpl_id: 2
+    understat_name: Kepa
+    fpl_name: Kepa Arrizabalaga Revuelta
+  - understat_id: 12766
+    fpl_id: 518
+    understat_name: Jota Silva
+    fpl_name: João Pedro Ferreira da Silva
+  - understat_id: 13200
+    fpl_id: 645
+    understat_name: Fernando López
+    fpl_name: Fer López González
+  - understat_id: 13779
+    fpl_id: 510
+    understat_name: Jair
+    fpl_name: Jair Paula da Cunha Filho

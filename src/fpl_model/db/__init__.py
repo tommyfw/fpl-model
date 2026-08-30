@@ -24,5 +24,8 @@ def init_db(conn: sqlite3.Connection | None = None, settings: Settings | None = 
         close = False
     schema = SCHEMA_PATH.read_text()
     conn.executescript(schema)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(map_player_ids)").fetchall()}
+    if "match_method" not in cols:
+        conn.execute("ALTER TABLE map_player_ids ADD COLUMN match_method TEXT")
     conn.commit()
     return conn

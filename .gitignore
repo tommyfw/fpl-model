@@ -5,6 +5,7 @@ __pycache__/
 .mypy_cache/
 .DS_Store
 data/raw/
+data/id_map_*.csv
 data/*.sqlite
 data/*.sqlite-*
 *.egg-info/

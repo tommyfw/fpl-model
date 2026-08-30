@@ -2,9 +2,10 @@ data_dir: data
 db_path: data/fpl.sqlite
 vaastav_base_url: https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master
 seasons:
-  - "2023-24"
-  - "2024-25"
   - "2025-26"
+  - "2024-25"
+  - "2023-24"
+default_season: "2025-26"
 min_as_of_gw: 8
 max_as_of_gw: 34
 horizon_gws: 5

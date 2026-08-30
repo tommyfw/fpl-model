@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS map_player_ids (
     fpl_id INTEGER,
     understat_id INTEGER,
     fpl_name TEXT,
-    understat_name TEXT
+    understat_name TEXT,
+    match_method TEXT
 );
 
 CREATE TABLE IF NOT EXISTS fact_fpl_player_gw (
@@ -126,5 +127,43 @@ CREATE TABLE IF NOT EXISTS score_player_asof (
     PRIMARY KEY (season, as_of_gw, fpl_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_gw_season_round ON fact_fpl_player_gw (season, round);
-CREATE INDEX IF NOT EXISTS idx_fix_season_event ON fact_fixture (season, event);
+CREATE TABLE IF NOT EXISTS fact_understat_player_match (
+    season TEXT NOT NULL,
+    understat_id INTEGER NOT NULL,
+    match_id INTEGER,
+    date TEXT,
+    minutes REAL,
+    position TEXT,
+    shots REAL,
+    shots_in_box REAL,
+    key_passes REAL,
+    goals REAL,
+    assists REAL,
+    xg REAL,
+    xa REAL,
+    npg REAL,
+    npxg REAL,
+    xgchain REAL,
+    xgbuildup REAL,
+    h_team TEXT,
+    a_team TEXT
+);
+
+CREATE TABLE IF NOT EXISTS fact_understat_team_match (
+    season TEXT NOT NULL,
+    match_id INTEGER,
+    datetime TEXT,
+    date TEXT,
+    finished INTEGER,
+    team_title TEXT,
+    team_key TEXT,
+    understat_team_id INTEGER,
+    is_home INTEGER,
+    xg_for REAL,
+    xg_against REAL,
+    gf REAL,
+    ga REAL
+);
+
+CREATE INDEX IF NOT EXISTS idx_us_player_date ON fact_understat_player_match (season, understat_id, date);
+CREATE INDEX IF NOT EXISTS idx_us_team_date ON fact_understat_team_match (season, date);

@@ -18,9 +18,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("init-db", help="Create SQLite schema")
 
-    s = sub.add_parser("ingest", help="Download vaastav files and load a season")
+    s = sub.add_parser("ingest", help="Download vaastav + Understat and load a season")
     s.add_argument("--season", required=True)
     s.add_argument("--download-only", action="store_true")
+    s.add_argument("--skip-understat", action="store_true")
 
     f = sub.add_parser("features", help="Build as-of features for gameweek T (uses GW < T only)")
     f.add_argument("--season", required=True)
@@ -34,6 +35,10 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--season", required=True)
     c.add_argument("--as-of", type=int, required=True)
     c.add_argument("--name", required=True)
+
+    m = sub.add_parser("id-map", help="Rebuild FPL↔Understat map and write a review CSV")
+    m.add_argument("--season", required=True)
+    m.add_argument("--export-only", action="store_true", help="Write CSV from the current DB without rematching")
 
     b = sub.add_parser("backtest", help="Walk-forward Spearman vs next-horizon actual points")
     b.add_argument("--season", required=True)
@@ -53,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.download_only:
             print(f"downloaded {args.season} -> {settings.raw_dir / args.season}")
             return 0
-        load_season(args.season, settings)
+        load_season(args.season, settings, skip_understat=args.skip_understat)
         print(f"loaded {args.season} into {settings.db_path}")
         return 0
 
@@ -95,6 +100,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  Upside   {card['upside']}")
             print(f"  *{card['action']}*")
             print()
+        return 0
+
+    if args.cmd == "id-map":
+        from fpl_model.ingest.understat import (
+            build_and_store_map,
+            download_league,
+            write_id_map_review,
+        )
+
+        conn = connect(settings)
+        init_db(conn, settings)
+        if not args.export_only:
+            league = download_league(args.season, settings)
+            mapping = build_and_store_map(conn, args.season, league)
+            matched = mapping["understat_id"].notna() & mapping["fpl_id"].notna()
+            n_fpl = int(mapping["fpl_id"].notna().sum())
+            print(f"mapped {int(matched.sum())}/{n_fpl} FPL players")
+            print(mapping["match_method"].value_counts().to_string())
+        dest = write_id_map_review(conn, args.season)
+        conn.close()
+        print(f"review CSV -> {dest}")
         return 0
 
     if args.cmd == "backtest":

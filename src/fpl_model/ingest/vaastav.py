@@ -71,6 +71,7 @@ def download_season(season: str, settings: Settings | None = None, client: httpx
         "teams.csv": f"{base}/data/{season}/teams.csv",
         "players_raw.csv": f"{base}/data/{season}/players_raw.csv",
         "id_dict.csv": f"{base}/data/{season}/id_dict.csv",
+        "player_idlist.csv": f"{base}/data/{season}/player_idlist.csv",
     }
     own = client is None
     client = client or httpx.Client(timeout=60.0, follow_redirects=True)
@@ -109,6 +110,8 @@ def _clear_season(conn, season: str) -> None:
         "feat_player_asof",
         "fact_fpl_player_gw",
         "fact_fixture",
+        "fact_understat_player_match",
+        "fact_understat_team_match",
         "map_player_ids",
         "dim_player",
         "dim_team",
@@ -117,7 +120,7 @@ def _clear_season(conn, season: str) -> None:
     conn.execute("INSERT OR IGNORE INTO dim_season(season) VALUES (?)", (season,))
 
 
-def load_season(season: str, settings: Settings | None = None) -> None:
+def load_season(season: str, settings: Settings | None = None, skip_understat: bool = False) -> None:
     settings = settings or load_settings()
     dest = settings.raw_dir / season
     if not (dest / "merged_gw.csv").exists():
@@ -161,10 +164,11 @@ def load_season(season: str, settings: Settings | None = None) -> None:
     _to_sql(conn, dim_player, "dim_player")
 
     gw = pd.read_csv(dest / "merged_gw.csv")
-    out = pd.DataFrame({"season": season})
+    out = pd.DataFrame(index=gw.index)
+    out["season"] = season
     for src, dst in GW_COLS.items():
         if src in gw.columns:
-            out[dst] = gw[src]
+            out[dst] = gw[src].values
         else:
             out[dst] = pd.NA
     if "position" in gw.columns:
@@ -213,6 +217,7 @@ def load_season(season: str, settings: Settings | None = None) -> None:
     out["was_home"] = out["was_home"].map(lambda x: 1 if str(x).lower() in {"true", "1"} else (0 if str(x).lower() in {"false", "0"} else pd.NA))
     out["starts"] = out["starts"].fillna(0)
     out["fixture_id"] = out["fixture_id"].fillna(-1)
+    out = out.drop_duplicates(subset=["season", "fpl_id", "round", "fixture_id"], keep="last")
     _to_sql(conn, out, "fact_fpl_player_gw")
 
     fx = pd.read_csv(dest / "fixtures.csv")
@@ -233,22 +238,25 @@ def load_season(season: str, settings: Settings | None = None) -> None:
     )
     _to_sql(conn, fact_fx, "fact_fixture")
 
-    id_path = dest / "id_dict.csv"
-    if id_path.exists():
-        ids = pd.read_csv(id_path)
-        cols = {c.lower(): c for c in ids.columns}
-        fpl_col = cols.get("fpl_id") or cols.get("fpl id")
-        us_col = cols.get("understat_id")
-        mapping = pd.DataFrame(
-            {
-                "season": season,
-                "fpl_id": pd.to_numeric(ids[fpl_col], errors="coerce") if fpl_col else pd.NA,
-                "understat_id": pd.to_numeric(ids[us_col], errors="coerce") if us_col else pd.NA,
-                "fpl_name": ids[cols["fpl_name"]] if "fpl_name" in cols else pd.NA,
-                "understat_name": ids[cols["understat_name"]] if "understat_name" in cols else pd.NA,
-            }
-        )
-        _to_sql(conn, mapping, "map_player_ids")
-
     conn.commit()
+    if skip_understat:
+        conn.close()
+        return
+    from fpl_model.ingest.understat import build_and_store_map, download_league, store_understat_facts
+
+    league = download_league(season, settings)
+    mapping = build_and_store_map(conn, season, league)
+    matched = mapping["understat_id"].notna() & mapping["fpl_id"].notna()
+    n_fpl = int(mapping["fpl_id"].notna().sum())
+    n_matched = int(matched.sum())
+    n_players, n_matches = store_understat_facts(conn, season, league, settings)
+    print(
+        f"understat map {n_matched}/{n_fpl} FPL players "
+        f"({(n_matched / n_fpl * 100 if n_fpl else 0):.1f}%), "
+        f"{n_players} player files, {n_matches} matches"
+    )
+    from fpl_model.ingest.understat import write_id_map_review
+
+    review = write_id_map_review(conn, season)
+    print(f"id map review -> {review}")
     conn.close()

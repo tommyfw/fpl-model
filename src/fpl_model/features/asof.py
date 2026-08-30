@@ -37,6 +37,112 @@ def load_players(conn: sqlite3.Connection, season: str) -> pd.DataFrame:
     )
 
 
+def load_teams(conn: sqlite3.Connection, season: str) -> pd.DataFrame:
+    return pd.read_sql_query(
+        "SELECT * FROM dim_team WHERE season = ?",
+        conn,
+        params=(season,),
+    )
+
+
+def _asof_cutoff(fx: pd.DataFrame, as_of_gw: int) -> pd.Timestamp | None:
+    kicks = pd.to_datetime(fx.loc[fx["event"] == as_of_gw, "kickoff_time"], utc=True, errors="coerce")
+    if kicks.notna().any():
+        return kicks.min()
+    return None
+
+
+def _apply_understat(
+    conn: sqlite3.Connection,
+    season: str,
+    as_of_gw: int,
+    fx: pd.DataFrame,
+    out: pd.DataFrame,
+    settings: Settings,
+) -> pd.DataFrame:
+    cutoff = _asof_cutoff(fx, as_of_gw)
+    if cutoff is None:
+        return out
+    cut_date = cutoff.tz_convert("UTC").strftime("%Y-%m-%d") if getattr(cutoff, "tzinfo", None) else cutoff.strftime("%Y-%m-%d")
+
+    exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='fact_understat_player_match'"
+    ).fetchone()
+    if not exists:
+        return out
+
+    us = pd.read_sql_query(
+        """
+        SELECT m.fpl_id, u.*
+        FROM fact_understat_player_match u
+        JOIN map_player_ids m
+          ON m.season = u.season AND m.understat_id = u.understat_id
+        WHERE u.season = ? AND m.fpl_id IS NOT NULL AND u.date < ?
+        """,
+        conn,
+        params=(season, cut_date),
+    )
+    if not us.empty:
+        g = us.groupby("fpl_id", as_index=True).agg(
+            us_minutes=("minutes", "sum"),
+            us_npxg=("npxg", "sum"),
+            us_npxa=("xa", "sum"),
+            us_shots=("shots", "sum"),
+            us_sib=("shots_in_box", "sum"),
+            us_kp=("key_passes", "sum"),
+            us_xgchain=("xgchain", "sum"),
+            us_xgbuildup=("xgbuildup", "sum"),
+        )
+        pos_mode = us.groupby("fpl_id")["position"].agg(lambda s: s.dropna().mode().iloc[0] if not s.dropna().empty else None)
+        g["us_position"] = pos_mode
+        prior = settings.shrink_prior_minutes
+        idx = g.index.intersection(out.index)
+        if len(idx):
+            minutes = g.loc[idx, "us_minutes"]
+            for dest, src in [
+                ("npxg90", "us_npxg"),
+                ("npxa90", "us_npxa"),
+                ("shots90", "us_shots"),
+                ("shots_in_box90", "us_sib"),
+                ("key_passes90", "us_kp"),
+                ("xgchain90", "us_xgchain"),
+            ]:
+                raw = pd.Series(per90(g.loc[idx, src], minutes), index=idx)
+                pos_mean = float(raw.mean()) if raw.notna().any() else 0.0
+                out.loc[idx, dest] = shrink_to_mean(raw, minutes, pos_mean, prior)
+            out.loc[idx, "npxgi90"] = out.loc[idx, "npxg90"].fillna(0) + out.loc[idx, "npxa90"].fillna(0)
+            shots = g.loc[idx, "us_shots"].clip(lower=1)
+            out.loc[idx, "chance_quality90"] = g.loc[idx, "us_npxg"] / shots
+            out.loc[idx, "us_position"] = g.loc[idx, "us_position"]
+            out.loc[idx, "understat_matched"] = 1
+
+    teams = load_teams(conn, season)
+    if not teams.empty:
+        from fpl_model.ingest.id_map import team_key
+
+        teams = teams.copy()
+        teams["tkey"] = teams["name"].map(team_key)
+        ut = pd.read_sql_query(
+            "SELECT * FROM fact_understat_team_match WHERE season = ? AND finished = 1 AND date < ?",
+            conn,
+            params=(season, cut_date),
+        )
+        if not ut.empty:
+            ut = ut.merge(teams[["tkey", "team_id"]], left_on="team_key", right_on="tkey", how="left")
+            tg = ut.dropna(subset=["team_id"]).groupby("team_id", as_index=True).agg(
+                n=("match_id", "nunique"),
+                xgf=("xg_for", "sum"),
+                xga=("xg_against", "sum"),
+            )
+            tg["n"] = tg["n"].clip(lower=1)
+            atk = tg["xgf"] / tg["n"]
+            de = -(tg["xga"] / tg["n"])
+            out["team_attack"] = out["team_id"].map(atk).fillna(out.get("team_attack"))
+            out["team_defence"] = out["team_id"].map(de).fillna(out.get("team_defence"))
+            out["p_clean_sheet"] = _cs_rate((-out["team_defence"]).clip(lower=0.05))
+    return out
+
+
 def asof_gw_frame(gw: pd.DataFrame, as_of_gw: int) -> pd.DataFrame:
     """Rows strictly before gameweek T. Never includes round >= T."""
     if XP_FORBIDDEN in gw.columns:
@@ -163,7 +269,7 @@ def build_features_for_asof(
     out["corners_order"] = meta["corners_order"]
     out["direct_fk_order"] = meta["direct_fk_order"]
 
-    out = out.merge(team_stats.rename(columns={"team_id": "team_id"}), on="team_id", how="left")
+    out = out.join(team_stats.set_index("team_id"), on="team_id")
     out["matches_available"] = out["matches"].fillna(0).clip(lower=1)
     out["start_pct"] = out["starts"] / out["matches_available"]
     out["minutes_pct"] = out["minutes"] / (90.0 * out["matches_available"])
@@ -213,15 +319,16 @@ def build_features_for_asof(
     hit_rate = started.groupby("fpl_id")["defcon_hit"].mean()
     out["defcon_hit_rate"] = hit_rate.reindex(out.index).fillna(0.0)
 
-    # proxies until Understat shot maps ingested
+    # proxies until Understat overlays
     out["shots_in_box90"] = out["threat90"] / 10.0
     out["key_passes90"] = out["creativity90"] / 10.0
     out["chance_quality90"] = out["npxg90"]
     out["xgchain90"] = out["npxgi90"]
-
+    out["understat_matched"] = 0
     out["p_clean_sheet"] = _cs_rate(out["ga90"].fillna(out["ga90"].median() if out["ga90"].notna().any() else 1.2))
     out["team_attack"] = out["gf90"]
-    out["team_defence"] = -out["ga90"]  # higher = better defence after percentile invert handled in scoring
+    out["team_defence"] = -out["ga90"]
+    out = _apply_understat(conn, season, as_of_gw, fx, out, settings)
     out["price"] = out["last_value"] / 10.0
     out["availability"] = np.where(
         out["status"].isin(["i", "s", "u", "n"]),
@@ -235,7 +342,7 @@ def build_features_for_asof(
 
     # upcoming fixtures per team
     upc = upcoming_fixtures(fx, as_of_gw, settings.horizon_gws)
-    team_lookup = team_stats.set_index("team_id")
+    team_lookup = out.groupby("team_id")[["team_attack", "team_defence"]].first()
     fixture_rows = []
     for fpl_id, row in out.iterrows():
         team = row["team_id"]
@@ -244,16 +351,17 @@ def build_features_for_asof(
         for _, fr in fxs.iterrows():
             home = fr["team_h"] == team
             opp = fr["team_a"] if home else fr["team_h"]
-            opp_att = team_lookup.gf90.get(opp, team_lookup.gf90.mean() if len(team_lookup) else 1.2) if len(team_lookup) else 1.2
-            opp_def = team_lookup.ga90.get(opp, team_lookup.ga90.mean() if len(team_lookup) else 1.2) if len(team_lookup) else 1.2
-            # leaky opponent defence = high ga90 is good for attackers
+            opp_att = team_lookup["team_attack"].get(opp, team_lookup["team_attack"].mean() if len(team_lookup) else 1.2)
+            opp_def_score = team_lookup["team_defence"].get(opp, team_lookup["team_defence"].mean() if len(team_lookup) else -1.2)
+            leak = float(-opp_def_score) if pd.notna(opp_def_score) else 1.2
+            att = float(opp_att) if pd.notna(opp_att) else 1.2
             ev = int(fr["event"]) if pd.notna(fr["event"]) else as_of_gw
             by_event.setdefault(ev, []).append(
                 {
                     "home": 1.0 if home else 0.0,
-                    "opp_attack": float(opp_att) if pd.notna(opp_att) else 1.2,
-                    "opp_defence_leak": float(opp_def) if pd.notna(opp_def) else 1.2,
-                    "p_cs": float(np.exp(-(opp_att if pd.notna(opp_att) else 1.2))),
+                    "opp_attack": att,
+                    "opp_defence_leak": leak,
+                    "p_cs": float(np.exp(-att)),
                 }
             )
         fixture_rows.append({"fpl_id": fpl_id, "fixtures_json": json.dumps({str(k): v for k, v in by_event.items()})})
@@ -267,6 +375,11 @@ def build_features_for_asof(
 def persist_features(conn: sqlite3.Connection, season: str, as_of_gw: int, feats: pd.DataFrame) -> None:
     conn.execute("DELETE FROM feat_player_asof WHERE season = ? AND as_of_gw = ?", (season, as_of_gw))
     recs = []
+    feats = feats.copy()
+    if "fpl_id" not in feats.columns:
+        feats = feats.reset_index()
+        if "index" in feats.columns and "fpl_id" not in feats.columns:
+            feats = feats.rename(columns={"index": "fpl_id"})
     for _, r in feats.iterrows():
         payload = r.drop(labels=["fpl_id", "position", "team_id", "price"], errors="ignore").to_dict()
         recs.append(
