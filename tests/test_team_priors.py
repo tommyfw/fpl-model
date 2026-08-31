@@ -2,11 +2,28 @@ import pandas as pd
 
 from fpl_model.config import load_settings
 from fpl_model.features.asof import _blend_team_strength
-from fpl_model.ingest.priors import load_team_priors, previous_season
+from fpl_model.ingest.priors import load_team_priors, previous_season, promoted_strength_anchor
 
 
 def test_previous_season():
     assert previous_season("2026-27") == "2025-26"
+
+
+def test_promoted_anchor_is_weaker_than_league_mean():
+    by_key = pd.DataFrame(
+        {
+            "prior_attack": [0.9, 1.1, 1.2, 1.35, 1.5, 1.7, 1.9, 2.1],
+            "prior_defence": [-1.9, -1.7, -1.55, -1.4, -1.25, -1.1, -0.95, -0.8],
+        }
+    )
+    att, de = promoted_strength_anchor(by_key, 0.25)
+    assert att < float(by_key["prior_attack"].mean())
+    assert de < float(by_key["prior_defence"].mean())  # more xGA
+    assert att > float(by_key["prior_attack"].min())
+    mean_att, mean_de = promoted_strength_anchor(by_key, 0.5)
+    assert att < mean_att
+    assert de < mean_de
+
 
 
 def test_blend_pulls_single_match_toward_prior(monkeypatch):

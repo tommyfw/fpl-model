@@ -6,7 +6,7 @@ from fpl_model.scoring.engine import horizon_weights
 
 
 def test_horizon_weights_keep_five_gw_spec():
-    hz = [0.40, 0.25, 0.15, 0.10, 0.10]
+    hz = [0.28, 0.22, 0.18, 0.16, 0.16]
     w = horizon_weights(hz, 5)
     assert len(w) == 5
     np.testing.assert_allclose(w, hz)
@@ -14,7 +14,7 @@ def test_horizon_weights_keep_five_gw_spec():
 
 
 def test_horizon_weights_stretch_to_ten():
-    w = horizon_weights([0.40, 0.25, 0.15, 0.10, 0.10], 10)
+    w = horizon_weights([0.28, 0.22, 0.18, 0.16, 0.16], 10)
     assert len(w) == 10
     np.testing.assert_allclose(w.sum(), 1.0)
     assert w[0] > w[-1]

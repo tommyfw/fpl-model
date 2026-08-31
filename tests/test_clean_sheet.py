@@ -1,4 +1,4 @@
-from fpl_model.scoring.clean_sheet import fixture_p_cs, horizon_p_cs, pack_fixture
+from fpl_model.scoring.clean_sheet import fixture_p_cs, horizon_p_cs, isolate_event, pack_fixture
 
 
 def test_own_defence_matters_not_just_opponent():
@@ -19,3 +19,12 @@ def test_horizon_p_cs_averages_matches_and_skips_blanks():
     fx = '{"10": [{"p_cs": 0.4}], "12": [{"p_cs": 0.2}]}'
     assert abs(horizon_p_cs(fx, horizon=3, fallback=0.1) - 0.3) < 1e-9
     assert horizon_p_cs("{}", 5, fallback=0.22) == 0.22
+
+
+def test_isolate_event_does_not_promote_later_gw_after_blank():
+    fx = '{"3": [{"p_cs": 0.4}], "4": [{"p_cs": 0.2}]}'
+    only = isolate_event(fx, 2)
+    assert '"2"' in only
+    assert horizon_p_cs(only, horizon=1, fallback=0.1) == 0.1
+    assert abs(horizon_p_cs(isolate_event(fx, 3), horizon=1, fallback=0.1) - 0.4) < 1e-9
+

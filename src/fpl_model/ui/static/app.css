@@ -258,7 +258,7 @@ button.ghost {
   min-width: 7.5rem;
   cursor: pointer;
 }
-.chip.captain { border-color: var(--hold); }
+.chip.blank { opacity: 0.55; }
 .chip .nm { font-weight: 650; font-size: 0.85rem; }
 .chip .dt { color: var(--muted); font-size: 0.72rem; margin-top: 0.15rem; }
 .pos-block { margin-bottom: 0.85rem; }

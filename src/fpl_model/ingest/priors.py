@@ -13,11 +13,28 @@ def previous_season(season: str) -> str:
     return f"{y - 1}-{str(y)[-2:]}"
 
 
-def load_team_priors(conn: sqlite3.Connection, season: str) -> pd.DataFrame:
+def promoted_strength_anchor(by_key: pd.DataFrame, quantile: float = 0.25) -> tuple[float, float]:
+    """Bottom-of-table PL rates for clubs with no prior PL season.
+
+    ``prior_attack`` is xG for; ``prior_defence`` is −xGA. Quantile 0.25 is the
+    weaker attacking and weaker defending quarter of last year's league.
+    """
+    q = float(np.clip(quantile, 0.0, 1.0))
+    if by_key.empty:
+        return 1.05, -1.55
+    att = float(by_key["prior_attack"].quantile(q))
+    de = float(by_key["prior_defence"].quantile(q))
+    return att, de
+
+
+def load_team_priors(
+    conn: sqlite3.Connection, season: str, promoted_quantile: float = 0.25
+) -> pd.DataFrame:
     """Prior team attack/defence (xG for / −xGA per match) from the previous PL season.
 
     Returning clubs use their own prior-season Understat rates.
-    Promoted clubs (no prior PL season) use the previous-season league average.
+    Promoted clubs (no prior PL season) use the previous-season PL quantile
+    (default: bottom quartile), not the league mean.
     Index: team_id for ``season``.
     """
     prev = previous_season(season)
@@ -82,15 +99,14 @@ def load_team_priors(conn: sqlite3.Connection, season: str) -> pd.DataFrame:
             index=g.index,
         )
 
-    league_att = float(by_key["prior_attack"].mean()) if len(by_key) else 1.3
-    league_de = float(by_key["prior_defence"].mean()) if len(by_key) else -1.3
+    promo_att, promo_de = promoted_strength_anchor(by_key, promoted_quantile)
 
     out = curr.set_index("team_id")[[]]
     out["prior_attack"] = curr.set_index("team_id")["tkey"].map(by_key["prior_attack"])
     out["prior_defence"] = curr.set_index("team_id")["tkey"].map(by_key["prior_defence"])
     out["is_promoted"] = out["prior_attack"].isna().astype(int)
-    out["prior_attack"] = out["prior_attack"].fillna(league_att)
-    out["prior_defence"] = out["prior_defence"].fillna(league_de)
+    out["prior_attack"] = out["prior_attack"].fillna(promo_att)
+    out["prior_defence"] = out["prior_defence"].fillna(promo_de)
     return out
 
 

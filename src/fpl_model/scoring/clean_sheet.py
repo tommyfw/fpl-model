@@ -65,6 +65,12 @@ def pack_fixture(
     }
 
 
+def isolate_event(fixtures_json: Any, event: int) -> str:
+    """Keep only one GW so a later fixture is not treated as 'next' after a blank."""
+    by = parse_fixtures_json(fixtures_json)
+    return json.dumps({str(int(event)): by.get(str(int(event)), [])})
+
+
 def parse_fixtures_json(fixtures_json: Any) -> dict[str, list]:
     try:
         by_event = json.loads(fixtures_json) if isinstance(fixtures_json, str) else (fixtures_json or {})

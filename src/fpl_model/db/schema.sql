@@ -147,6 +147,8 @@ CREATE TABLE IF NOT EXISTS fact_understat_player_match (
     npxg REAL,
     xgchain REAL,
     xgbuildup REAL,
+    open_npxg REAL,
+    sp_xg REAL,
     h_team TEXT,
     a_team TEXT
 );
@@ -181,7 +183,21 @@ CREATE TABLE IF NOT EXISTS fact_fbref_player (
     interceptions REAL,
     blocks REAL,
     clearances REAL,
+    psxg REAL,
+    psxg_net REAL,
+    psxg_net90 REAL,
     PRIMARY KEY (season, player, squad)
+);
+
+CREATE TABLE IF NOT EXISTS fact_fbref_squad (
+    season TEXT NOT NULL,
+    squad TEXT NOT NULL,
+    poss REAL,
+    att3rd REAL,
+    def3rd REAL,
+    att_pen REAL,
+    tilt REAL,
+    PRIMARY KEY (season, squad)
 );
 
 CREATE TABLE IF NOT EXISTS map_fbref (

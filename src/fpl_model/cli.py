@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--skip-understat", action="store_true")
     s.add_argument("--force", action="store_true", help="Refetch live API / FBref caches")
 
-    fb = sub.add_parser("fbref", help="Download FBref shooting/defence tables and map to FPL ids")
+    fb = sub.add_parser("fbref", help="Load FBref stats/defence/keepersadv/possession HTML and map to FPL ids")
     fb.add_argument("--season", required=True)
     fb.add_argument("--force", action="store_true")
 

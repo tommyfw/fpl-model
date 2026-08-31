@@ -174,11 +174,14 @@ def test_haaland_quirk_uses_minutes_when_starts_are_zero():
     df = pd.DataFrame(
         {
             "position": ["FWD"],
-            "start_pct": [0.0],
+            "start_pct": [0.52],
             "start_pct_l5": [0.0],
             "minutes_pct": [0.95],
+            "minutes_pct_l5": [1.0],
+            "rotation_start_pct": [0.0],
+            "rival_games": [0],
             "availability": [1.0],
-            "matches": [8],
+            "matches": [1],
             "npxg90": [0.7],
             "npxa90": [0.1],
             "defcon_hit_rate": [0.0],
@@ -187,7 +190,7 @@ def test_haaland_quirk_uses_minutes_when_starts_are_zero():
         }
     )
     xp = compute_xpts(df, weights, settings)
-    assert float(xp.iloc[0]) > 12
+    assert float(xp.iloc[0]) > 20
 
 
 def test_xi_actual_doubles_captain():

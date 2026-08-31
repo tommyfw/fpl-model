@@ -139,13 +139,16 @@ def _leaf_col(name: str, df: pd.DataFrame) -> str | None:
         "defcon_hit_rate": "defcon_hit_rate_s",
         "fbref_cbit90": "fbref_cbit90_s",
         "xgchain90": "xgchain90_s",
+        "xgbuildup90": "xgbuildup90_s",
+        "open_npxg90": "open_npxg90_s",
+        "sp_xg90": "sp_xg90_s",
         "chance_quality90": "chance_quality90_s",
         "p_clean_sheet": "p_clean_sheet_s",
         "team_defence": "team_defence_s",
         "saves90": "saves90_s",
         "fpl_output": "points90_s",
-        "penalty_exposure": None,
-        "shot_stopping": "xgc90_s" if "xgc90_s" in df.columns else None,
+        "penalty_exposure": "pen_score_s" if "pen_score_s" in df.columns else None,
+        "shot_stopping": "shot_stopping_s" if "shot_stopping_s" in df.columns else None,
     }.get(name, f"{name}_s")
     if alt is None or alt not in df.columns:
         return None
@@ -181,10 +184,15 @@ def score_feature_frame(feats: pd.DataFrame, weights: dict[str, Any], settings: 
         "defcon_hit_rate",
         "fbref_cbit90",
         "xgchain90",
+        "xgbuildup90",
+        "open_npxg90",
+        "sp_xg90",
         "chance_quality90",
         "p_clean_sheet",
         "team_defence",
         "saves90",
+        "shot_stopping",
+        "pen_score",
     ]
     f_cols = ["points90_blend", "points90", "goals90", "assists90", "bonus90", "bps90"]
     m_cols = ["start_pct", "minutes_pct", "start_pct_l5", "rotation_start_pct", "slot_security", "availability"]
@@ -192,7 +200,7 @@ def score_feature_frame(feats: pd.DataFrame, weights: dict[str, Any], settings: 
 
     df = _norm_group(
         df,
-        [c for c in u_cols + f_cols + m_cols + role_cols + ["team_attack", "price", "points_form"] if c in df.columns],
+        [c for c in u_cols + f_cols + m_cols + role_cols + ["team_attack", "price", "points_form", "team_tilt"] if c in df.columns],
         invert=set(),
     )
     # Keep FBref scores missing when the raw rate is missing (unmatched / no minutes)
@@ -230,6 +238,12 @@ def score_feature_frame(feats: pd.DataFrame, weights: dict[str, Any], settings: 
                 matched = df.loc[idx, "understat_matched"].fillna(0).astype(float) > 0
                 att_share = att_share.where(matched, 1.0)
             u = (1.0 - att_share) * u_dm + att_share * u
+        if pos == "DEF" and "DEF_CB" in uw and "DEF_FB" in uw:
+            u_cb = _underlying_score(df, idx, uw["DEF_CB"])
+            u_fb = _underlying_score(df, idx, uw["DEF_FB"])
+            fb = df.loc[idx, "def_fb_share"] if "def_fb_share" in df.columns else 0.45
+            fb = pd.Series(fb, index=df.index[idx]).fillna(0.45).clip(0.0, 1.0)
+            u = (1.0 - fb) * u_cb + fb * u_fb
         df.loc[idx, "U"] = u
 
         f_acc = pd.Series(0.0, index=df.index[idx])
@@ -248,6 +262,8 @@ def score_feature_frame(feats: pd.DataFrame, weights: dict[str, Any], settings: 
         central = df.loc[idx, "pitch_central"] if "pitch_central" in df.columns else 50.0
         pen = df.loc[idx, "pen_score"] if "pen_score" in df.columns else 38.0
         sp = df.loc[idx, "sp_score"] if "sp_score" in df.columns else 40.0
+        if "sp_xg90_s" in df.columns:
+            sp = 0.55 * pd.Series(sp, index=df.index[idx]).fillna(40) + 0.45 * df.loc[idx, "sp_xg90_s"].fillna(50)
         minutes_imp = df.loc[idx, "start_pct_s"]
         df.loc[idx, "R"] = (
             role["pitch_position"] * pd.Series(pitch, index=df.index[idx]).fillna(50)
@@ -261,7 +277,12 @@ def score_feature_frame(feats: pd.DataFrame, weights: dict[str, Any], settings: 
         mix = tm[pos]
         atk = df.loc[idx, "team_attack_s"] if "team_attack_s" in df.columns else 50
         de = df.loc[idx, "team_defence_s"] if "team_defence_s" in df.columns else 50
-        df.loc[idx, "T"] = mix["attack"] * atk + mix["defence"] * de
+        tscore = mix["attack"] * atk + mix["defence"] * de
+        if "team_tilt_s" in df.columns:
+            tw = {"FWD": 0.14, "MID": 0.12, "DEF": 0.08, "GK": 0.04}.get(pos, 0.08)
+            tilt = pd.Series(df.loc[idx, "team_tilt_s"], index=df.index[idx])
+            tscore = (1.0 - tw) * tscore + tw * tilt.fillna(50)
+        df.loc[idx, "T"] = tscore
 
         rot_s = df.loc[idx, "rotation_start_pct_s"] if "rotation_start_pct_s" in df.columns else df.loc[idx, "start_pct_l5_s"]
         slot = df.loc[idx, "slot_security"].fillna(1.0) * 100 if "slot_security" in df.columns else 100.0
@@ -271,6 +292,8 @@ def score_feature_frame(feats: pd.DataFrame, weights: dict[str, Any], settings: 
             + mw["rotation"] * (0.65 * pd.Series(rot_s, index=df.index[idx]).fillna(50) + 0.35 * pd.Series(slot, index=df.index[idx]).fillna(100))
             + mw["availability"] * (df.loc[idx, "availability"].fillna(1) * 100)
         ).clip(0, 100)
+        if "rest_factor" in df.columns:
+            df.loc[idx, "M"] = (df.loc[idx, "M"] * df.loc[idx, "rest_factor"].fillna(1.0).clip(0.82, 1.0)).clip(0, 100)
         _apply_minutes_reliability(df, idx, pos, settings)
 
     # Fixtures
@@ -398,15 +421,32 @@ def persist_scores(conn: sqlite3.Connection, season: str, as_of_gw: int, scored:
     conn.commit()
 
 
-def load_feats(conn: sqlite3.Connection, season: str, as_of_gw: int) -> pd.DataFrame:
-    raw = pd.read_sql_query(
-        "SELECT * FROM feat_player_asof WHERE season = ? AND as_of_gw = ?",
-        conn,
-        params=(season, as_of_gw),
-    )
+def load_feats(
+    conn: sqlite3.Connection,
+    season: str,
+    as_of_gw: int,
+    fpl_ids: list[int] | None = None,
+) -> pd.DataFrame:
+    if fpl_ids:
+        ids = [int(i) for i in fpl_ids]
+        ph = ",".join("?" * len(ids))
+        raw = pd.read_sql_query(
+            f"SELECT * FROM feat_player_asof WHERE season = ? AND as_of_gw = ? AND fpl_id IN ({ph})",
+            conn,
+            params=(season, as_of_gw, *ids),
+        )
+    else:
+        raw = pd.read_sql_query(
+            "SELECT * FROM feat_player_asof WHERE season = ? AND as_of_gw = ?",
+            conn,
+            params=(season, as_of_gw),
+        )
     if raw.empty:
         return raw
-    extra = pd.json_normalize(raw["features_json"].map(json.loads))
+    parsed = raw["features_json"].map(lambda s: json.loads(s) if isinstance(s, str) else (s or {}))
+    extra = pd.json_normalize(parsed)
+    clash = [c for c in extra.columns if c in raw.columns]
+    extra = extra.drop(columns=clash, errors="ignore")
     return pd.concat([raw.drop(columns=["features_json"]), extra], axis=1)
 
 

@@ -9,6 +9,16 @@ def test_pitch_attack_ranks_fw_above_cb():
     assert pitch_attack_score("Sub") == 50.0
 
 
+def test_def_fb_share_cb_vs_fullback():
+    from fpl_model.scoring.role import def_fb_share
+
+    assert def_fb_share("DC") == 0.0
+    assert def_fb_share("DL") == 1.0
+    assert def_fb_share("DR") == 1.0
+    mid = def_fb_share(None, 50)
+    assert 0.0 < mid < 1.0
+
+
 def test_penalties_and_set_pieces():
     assert penalty_score(1) == 100
     assert penalty_score(2) < penalty_score(1)

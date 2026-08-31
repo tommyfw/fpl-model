@@ -1,4 +1,4 @@
-from fpl_model.squad.optimize import build_squad
+from fpl_model.squad.optimize import build_squad, pick_xi
 
 
 def _p(fid, name, pos, price, xpts, overall, team_id, status="a"):
@@ -61,3 +61,25 @@ def test_overall_objective_also_picks_a_playing_keeper():
     assert out["ok"]
     xi_gk = next(p for p in out["xi"] if p["position"] == "GK")
     assert xi_gk["overall"] >= 70
+
+
+def test_pick_xi_benches_blank_week_midfielder():
+    squad = [
+        _p(1, "GK1", "GK", 5.0, 4.0, 70, 1),
+        _p(2, "GK2", "GK", 4.0, 1.0, 40, 2),
+    ]
+    for i in range(5):
+        squad.append(_p(10 + i, f"DEF{i}", "DEF", 4.5, 3.0, 55, 10 + i))
+    for i in range(4):
+        squad.append(_p(20 + i, f"MID{i}", "MID", 6.0, 8.0, 70, 10 + i))
+    squad.append(_p(29, "BlankMID", "MID", 6.0, 20.0, 80, 17))  # strong 5-GW, blank this GW
+    for i in range(3):
+        squad.append(_p(30 + i, f"FWD{i}", "FWD", 7.0, 6.0, 65, 10 + i))
+    for p in squad:
+        p["xpts_gw"] = 0.0 if p["web_name"] == "BlankMID" else 5.0
+    pack = pick_xi(squad, objective="xpts_gw")
+    xi_names = {p["web_name"] for p in pack["xi"]}
+    assert "BlankMID" not in xi_names
+    assert pack["formation"] is not None
+    assert len(pack["xi"]) == 11
+

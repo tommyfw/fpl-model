@@ -30,6 +30,9 @@ class Settings:
     prior_playing_grace_matches: int
     dampen_unused_minutes: bool
     team_prior_matches: int
+    promoted_prior_quantile: float
+    promoted_player_prior_scale: float
+    venue_prior_matches: int
     defcon_threshold: dict[str, int | None]
 
     @property
@@ -57,6 +60,9 @@ def load_settings(path: Path | None = None) -> Settings:
         prior_playing_grace_matches=int(raw.get("prior_playing_grace_matches", 3)),
         dampen_unused_minutes=bool(raw.get("dampen_unused_minutes", True)),
         team_prior_matches=int(raw.get("team_prior_matches", 8)),
+        promoted_prior_quantile=float(raw.get("promoted_prior_quantile", 0.25)),
+        promoted_player_prior_scale=float(raw.get("promoted_player_prior_scale", 0.78)),
+        venue_prior_matches=int(raw.get("venue_prior_matches", 4)),
         defcon_threshold=dict(raw["defcon_threshold"]),
     )
 

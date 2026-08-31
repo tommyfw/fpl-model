@@ -62,16 +62,19 @@ quality_by_pos:
 underlying:
   MID:
     npxgi90: 0.12
-    npxgi90_l5: 0.16
-    npxg90: 0.08
+    npxgi90_l5: 0.10
+    npxg90: 0.07
     npxa90: 0.10
     shots_in_box90: 0.07
     fbref_shots90: 0.04
     key_passes90: 0.10
     defcon_hit_rate: 0.08
     fbref_cbit90: 0.04
-    xgchain90: 0.08
-    chance_quality90: 0.13
+    xgchain90: 0.05
+    xgbuildup90: 0.04
+    chance_quality90: 0.10
+    open_npxg90: 0.05
+    sp_xg90: 0.04
   MID_DM:
     npxgi90: 0.10
     npxgi90_l5: 0.06
@@ -80,19 +83,22 @@ underlying:
     shots_in_box90: 0.04
     fbref_shots90: 0.03
     key_passes90: 0.08
-    defcon_hit_rate: 0.24
-    fbref_cbit90: 0.12
-    xgchain90: 0.10
+    defcon_hit_rate: 0.18
+    fbref_cbit90: 0.10
+    xgchain90: 0.08
+    xgbuildup90: 0.10
     chance_quality90: 0.13
   FWD:
-    npxgi90: 0.36
+    npxgi90: 0.26
     npxg90: 0.10
     npxa90: 0.10
     shots_in_box90: 0.07
     fbref_shots90: 0.07
     key_passes90: 0.10
-    xgchain90: 0.10
-    chance_quality90: 0.10
+    xgchain90: 0.08
+    chance_quality90: 0.08
+    open_npxg90: 0.08
+    sp_xg90: 0.06
   DEF:
     p_clean_sheet: 0.28
     team_defence: 0.20
@@ -103,11 +109,30 @@ underlying:
     fbref_shots90: 0.03
     key_passes90: 0.05
     chance_quality90: 0.08
+  DEF_CB:
+    p_clean_sheet: 0.34
+    team_defence: 0.24
+    defcon_hit_rate: 0.16
+    fbref_cbit90: 0.12
+    xgbuildup90: 0.08
+    npxgi90: 0.04
+    shots_in_box90: 0.01
+    fbref_shots90: 0.01
+  DEF_FB:
+    p_clean_sheet: 0.18
+    team_defence: 0.12
+    defcon_hit_rate: 0.10
+    fbref_cbit90: 0.06
+    npxgi90: 0.16
+    shots_in_box90: 0.08
+    fbref_shots90: 0.05
+    key_passes90: 0.10
+    chance_quality90: 0.08
+    xgbuildup90: 0.07
   GK:
-    p_clean_sheet: 0.40
-    saves90: 0.25
-    shot_stopping: 0.10
-    fpl_output: 0.15
+    p_clean_sheet: 0.42
+    saves90: 0.28
+    shot_stopping: 0.20
     penalty_exposure: 0.10
 
 fpl_output:
@@ -143,7 +168,8 @@ form:
   season: 0.1
 
 fixtures:
-  horizon: [0.40, 0.25, 0.15, 0.10, 0.10]
+  # Mild front-weight: a transfer is a 5-GW hold, not a one-week punt.
+  horizon: [0.28, 0.22, 0.18, 0.16, 0.16]
   FWD:
     opp_defence: 0.55
     opp_attack: 0.05
@@ -196,5 +222,7 @@ xpts:
   cs_scale: 0.65
   defcon_def: 1.5
   fwd_attack_scale: 1.10
-  p90_residual: 0.18
-  p90_residual_def: 0.08
+  p90_residual: 0.10
+  p90_residual_def: 0.06
+  bonus_scale: 0.55
+  bps_scale: 0.12

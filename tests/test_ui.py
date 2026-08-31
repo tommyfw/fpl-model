@@ -76,6 +76,14 @@ def test_list_and_get_player():
     assert empty == []
 
 
+def test_lineup_needs_fifteen():
+    conn = _conn()
+    out = queries.lineup_for_squad(conn, "2026-27", 2, [1])
+    assert out["ok"] is False
+    assert "15" in out["error"]
+
+
+
 def test_player_stats_prefer_understat_totals():
     from fpl_model.config import load_settings
 

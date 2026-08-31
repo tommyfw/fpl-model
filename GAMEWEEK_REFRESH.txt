@@ -1,0 +1,128 @@
+FPL model — weekly refresh
+==========================
+
+Do this after the last gameweek has finished (FPL has logged minutes and points)
+and before you pick the next deadline. Live season is 2026-27.
+
+As-of GW T means: use only GW 1 … T−1, plus fixtures already known, to score the
+next 5 gameweeks. `fpl-model update` sets T from FPL (current unfinished GW).
+Example: after GW2 is done, T is usually 3.
+
+
+0. Open a terminal
+-----------------
+cd /Users/thomas/FPL-Model
+source .venv/bin/activate
+
+
+1. Download FBref HTML (browser — Cloudflare blocks auto-fetch)
+---------------------------------------------------------------
+Save each page as “Webpage, Complete” or “HTML only” into:
+
+  data/raw/fbref/2026-27/
+
+Wait until the tables show real numbers (not blank Opta cells), then save.
+
+  stats.html
+  https://fbref.com/en/comps/9/stats/Premier-League-Stats
+  (player playing time / standard stats)
+
+  defense.html
+  https://fbref.com/en/comps/9/defense/Premier-League-Stats
+
+  keepersadv.html
+  https://fbref.com/en/comps/9/keepersadv/Premier-League-Stats
+  Check that PSxG and PSxG+/- have numbers for keepers, not empty cells.
+
+  possession.html
+  https://fbref.com/en/comps/9/possession/Premier-League-Stats
+  Check that Att 3rd / Def 3rd have numbers. Possession % alone is a fallback.
+
+If the browser names the files like
+“Premier League Goalkeeper Stats _ FBref.com.html”, copy/rename them:
+
+  cp ~/Downloads/Premier\ League\ Player\ Stats\ _\ FBref.com.html \
+    data/raw/fbref/2026-27/stats.html
+  cp ~/Downloads/Premier\ League\ Defensive\ Action\ Stats\ _\ FBref.com.html \
+    data/raw/fbref/2026-27/defense.html
+  cp ~/Downloads/Premier\ League\ Goalkeeper\ Stats\ _\ FBref.com.html \
+    data/raw/fbref/2026-27/keepersadv.html
+  cp ~/Downloads/Premier\ League\ Possession\ Stats\ _\ FBref.com.html \
+    data/raw/fbref/2026-27/possession.html
+
+
+2. Refresh FPL + Understat + FBref, then score
+---------------------------------------------
+Save the four HTML files first, then one command (live FPL API, Understat,
+FBref from those files, features, score):
+
+  fpl-model update
+
+Auto-download from FBref usually fails (Cloudflare). That is fine: update
+still parses the HTML you saved. It prints “fbref mapped N FPL players” and
+something like “live FPL 2026-27; scoring as-of GW3 …”. Note the as-of number.
+
+If you already know T (e.g. 3) you can do the same steps by hand:
+
+  fpl-model ingest --season 2026-27 --source live --force
+  fpl-model fbref --season 2026-27
+  fpl-model features --season 2026-27 --as-of 3
+  fpl-model score --season 2026-27 --as-of 3
+
+Do not use last week’s as-of. If you score GW2 after GW2 has finished, you are
+leaking that week’s results into the pick for GW3.
+
+
+3. Sanity-check
+--------------
+  fpl-model card --season 2026-27 --as-of 3 --name Haaland
+
+You want a printed card with Overall / xPts / action, not “no scores found”.
+
+If FBref said PSxG cells were empty, keepers are still using xGC−GA, and team
+tilt is possession % rather than Att 3rd. Re-save keepersadv + possession and
+rerun:
+
+  fpl-model fbref --season 2026-27
+  fpl-model features --season 2026-27 --as-of 3
+  fpl-model score --season 2026-27 --as-of 3
+
+
+4. Open the UI
+---------------
+If it is already running, refresh the browser (scores are in SQLite).
+
+If not:
+
+  fpl-model ui --port 8766
+
+Then open http://127.0.0.1:8766
+
+If the UI looks stuck on an old build, stop the old process and start it again
+on the same port.
+
+
+Optional
+--------
+Understat id mismatches (new signings / spelling):
+
+  fpl-model id-map --season 2026-27 --export-only
+
+Review the CSV it prints, add aliases in config/player_aliases.yaml if needed,
+then rematch:
+
+  fpl-model id-map --season 2026-27
+  fpl-model features --season 2026-27 --as-of 3
+  fpl-model score --season 2026-27 --as-of 3
+
+Do not ingest 2025-26 into the live run or pool gameweeks across seasons.
+
+
+Quick copy-paste (after FBref files are in place)
+---------------
+cd /Users/thomas/FPL-Model
+source .venv/bin/activate
+fpl-model update
+fpl-model card --season 2026-27 --as-of 3 --name Haaland
+# change --as-of to the GW printed by update
+fpl-model ui --port 8766

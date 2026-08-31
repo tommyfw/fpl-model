@@ -29,7 +29,7 @@ Upside < 50 is not a buy signal.
 3. Compare **within position** (optionally CB vs FB, CDM vs AM).
 4. Map to **0–100** (percentile / clipped z).
 
-Promoted teams: prior → league average → observed team xG after ~6–8 GW.
+Promoted teams: prior → bottom-quartile PL (attack and defence) → observed team xG after ~6–8 GW.
 
 ---
 
@@ -141,7 +141,7 @@ DEF/MID from 2025/26: DefCon points sit inside points/90.
 Horizon (Blank = 0, **DGW = sum of both fixtures**):
 
 \[
-O = 0.40\,T + 0.25(T{+}1) + 0.15(T{+}2) + 0.10(T{+}3) + 0.10(T{+}4)
+O = 0.28\,T + 0.22(T{+}1) + 0.18(T{+}2) + 0.16(T{+}3) + 0.16(T{+}4)
 \]
 
 Per fixture (player’s view):

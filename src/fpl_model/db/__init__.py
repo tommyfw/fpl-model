@@ -32,5 +32,11 @@ def init_db(conn: sqlite3.Connection | None = None, settings: Settings | None = 
     _ensure("map_player_ids", "match_method", "TEXT")
     _ensure("dim_player", "code", "INTEGER")
     _ensure("dim_player", "selected_by_percent", "REAL")
+    _ensure("fact_understat_player_match", "open_npxg", "REAL")
+    _ensure("fact_understat_player_match", "sp_xg", "REAL")
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "fact_fbref_player" in tables:
+        for col in ("psxg", "psxg_net", "psxg_net90"):
+            _ensure("fact_fbref_player", col, "REAL")
     conn.commit()
     return conn

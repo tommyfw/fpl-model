@@ -10,6 +10,7 @@ const state = {
   shortlist: new Set(),
   myTeam: [],
   lastXi: null,
+  teamViewSeq: 0,
   cache: new Map(),
 };
 
@@ -338,10 +339,13 @@ function renderCard(p) {
 
 function chip(p, objective, captainId) {
   const cap = captainId === p.fpl_id ? " captain" : "";
-  const metric = objective === "overall" ? fmt(p.overall) : fmt(p.xpts, 1);
-  return `<div class="chip${cap}" data-id="${p.fpl_id}">
+  const dim = p.fixture === "BLANK" ? " blank" : "";
+  const metric =
+    objective === "overall" ? fmt(p.overall) : fmt(p.xpts_gw != null ? p.xpts_gw : p.xpts, 1);
+  const fx = p.fixture ? ` · ${p.fixture}` : "";
+  return `<div class="chip${cap}${dim}" data-id="${p.fpl_id}">
     <div class="nm">${p.web_name}${cap ? " (C)" : ""}</div>
-    <div class="dt">${p.team || "—"} · £${fmt(p.price)} · ${metric}</div>
+    <div class="dt">${p.team || "—"} · £${fmt(p.price)} · ${metric}${fx}</div>
   </div>`;
 }
 
@@ -427,6 +431,7 @@ async function loadPlayersByIds(ids) {
 }
 
 async function renderMyTeam() {
+  const seq = ++state.teamViewSeq;
   if (!state.myTeam.length) {
     $("team-board").innerHTML =
       `<p class="empty">No saved team yet. Build an XI and click “Save as my team”, or add players from cards.</p>`;
@@ -434,6 +439,7 @@ async function renderMyTeam() {
     return;
   }
   const players = await loadPlayersByIds(state.myTeam);
+  if (seq !== state.teamViewSeq) return;
   const spent = players.reduce((s, p) => s + (p.price || 0), 0);
   const obj = $("team-objective").value;
   const total = players.reduce((s, p) => s + (obj === "overall" ? p.overall || 0 : p.xpts || 0), 0);
@@ -451,6 +457,64 @@ async function renderMyTeam() {
       return `<div class="pos-block"><h4>${pos} (${(byPos[pos] || []).length})</h4><div class="xi-line" style="justify-content:flex-start">${rows || "<span class='meta'>empty</span>"}</div></div>`;
     })
     .join("");
+}
+
+function renderLineup(data) {
+  if (!data.ok) {
+    $("team-board").innerHTML = `<p class="empty">${data.error || "Could not pick a starting XI."}</p>`;
+    return;
+  }
+  const capId = data.captain ? data.captain.fpl_id : null;
+  const xiByPos = { GK: [], DEF: [], MID: [], FWD: [] };
+  data.xi.forEach((p) => xiByPos[p.position].push(p));
+  $("team-summary").textContent =
+    `GW${data.event} XI ${data.formation} · ${fmt(data.xi_objective, 1)} xPts` +
+    (data.captain ? ` · C ${data.captain.web_name}` : "") +
+    ` · next fixture only`;
+  $("team-board").innerHTML = `
+    <div class="pitch">
+      <h3>GW${data.event} starting XI (${data.formation})</h3>
+      <div class="xi-line">${xiByPos.GK.map((p) => chip(p, "xpts_gw", capId)).join("")}</div>
+      <div class="xi-line">${xiByPos.DEF.map((p) => chip(p, "xpts_gw", capId)).join("")}</div>
+      <div class="xi-line">${xiByPos.MID.map((p) => chip(p, "xpts_gw", capId)).join("")}</div>
+      <div class="xi-line">${xiByPos.FWD.map((p) => chip(p, "xpts_gw", capId)).join("")}</div>
+      <h3 style="margin-top:1rem">Bench</h3>
+      <div class="xi-line">${data.bench.map((p) => chip(p, "xpts_gw", null)).join("")}</div>
+    </div>`;
+}
+
+async function optimiseLineup() {
+  saveMyTeam();
+  const seq = ++state.teamViewSeq;
+  if (state.myTeam.length !== 15) {
+    $("team-board").innerHTML = `<p class="empty">Need a full 15-man squad (currently ${state.myTeam.length}).</p>`;
+    return;
+  }
+  $("team-board").innerHTML = `<p class="empty">Picking next-GW XI…</p>`;
+  const params = new URLSearchParams({
+    season: state.season,
+    as_of: String(state.asOf),
+    squad: state.myTeam.join(","),
+  });
+  try {
+    const res = await fetch(`/api/lineup?${params}`);
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(
+        res.status === 404
+          ? "Restart fpl-model ui — this server has no /api/lineup yet."
+          : `HTTP ${res.status}`
+      );
+    }
+    if (seq !== state.teamViewSeq) return;
+    renderLineup(data);
+  } catch (err) {
+    if (seq !== state.teamViewSeq) return;
+    $("team-board").innerHTML = `<p class="empty">${err.message || "Could not pick a starting XI."}</p>`;
+  }
 }
 
 async function suggestTransfers() {
@@ -648,6 +712,7 @@ $("search").addEventListener("input", onSearch);
 $("search").addEventListener("change", onSearch);
 $("xi-build").addEventListener("click", buildXi);
 $("xi-save-team").addEventListener("click", saveXiAsTeam);
+$("team-lineup").addEventListener("click", optimiseLineup);
 $("team-suggest").addEventListener("click", suggestTransfers);
 $("team-clear").addEventListener("click", () => {
   state.myTeam = [];

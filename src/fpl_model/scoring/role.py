@@ -55,6 +55,22 @@ def pitch_central_score(pos: str | None) -> float:
     return float(PITCH_CENTRAL.get(str(pos).upper(), 50.0))
 
 
+FB_POS = frozenset({"DL", "DR", "DML", "DMR", "ML", "MR", "WBL", "WBR"})
+CB_POS = frozenset({"DC"})
+
+
+def def_fb_share(pos: str | None, pitch_attack: float | None = None) -> float:
+    """0 = centre-back, 1 = full-back / wing-back. Unmapped → pitch_attack."""
+    if pos is not None and not (isinstance(pos, float) and pd.isna(pos)):
+        key = str(pos).upper()
+        if key in FB_POS:
+            return 1.0
+        if key in CB_POS:
+            return 0.0
+    atk = 50.0 if pitch_attack is None or (isinstance(pitch_attack, float) and pd.isna(pitch_attack)) else float(pitch_attack)
+    return float(min(1.0, max(0.0, (atk - 32.0) / 42.0)))
+
+
 def set_piece_score(corners_order, dfk_order) -> float:
     orders = []
     for o in (corners_order, dfk_order):

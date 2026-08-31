@@ -79,3 +79,12 @@ def test_missing_fbref_does_not_force_neutral_leaf():
     scored = score_feature_frame(df, weights, settings)
     assert scored["U"].notna().all()
     assert scored["U"].between(0, 100).all()
+
+
+def test_team_tilt_moves_team_score():
+    settings = load_settings()
+    weights = load_weights()
+    df = _minimal_feats(False)
+    df["team_tilt"] = [0.70, 0.60, 0.50, 0.45, 0.40, 0.30]
+    scored = score_feature_frame(df, weights, settings)
+    assert scored.loc[0, "T"] > scored.loc[5, "T"]

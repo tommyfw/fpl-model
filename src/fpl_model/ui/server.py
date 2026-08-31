@@ -48,6 +48,9 @@ class UIHandler(SimpleHTTPRequestHandler):
         if path == "/api/transfers":
             self._json(self._transfers(qs))
             return
+        if path == "/api/lineup":
+            self._json(self._lineup(qs))
+            return
         if path in ("/", "/index.html"):
             self.path = "/index.html"
         super().do_GET()
@@ -155,6 +158,23 @@ class UIHandler(SimpleHTTPRequestHandler):
         )
         conn.close()
         return out
+
+    def _lineup(self, qs: dict[str, str]) -> dict:
+        season, as_of = self._scope(qs)
+        if season is None:
+            return {"ok": False, "error": "no scores yet", "xi": [], "bench": []}
+        raw = qs.get("squad") or ""
+        try:
+            squad_ids = [int(x) for x in raw.split(",") if x.strip()]
+        except ValueError:
+            return {"ok": False, "error": "bad squad ids", "xi": [], "bench": []}
+        conn = connect(self.settings)
+        try:
+            return queries.lineup_for_squad(conn, season, as_of, squad_ids, settings=self.settings)
+        except Exception as exc:
+            return {"ok": False, "error": f"lineup failed: {exc}", "xi": [], "bench": []}
+        finally:
+            conn.close()
 
     def _scope(self, qs: dict[str, str]) -> tuple[str | None, int]:
         conn = connect(self.settings)

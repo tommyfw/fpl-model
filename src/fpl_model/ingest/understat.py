@@ -4,6 +4,8 @@ import json
 import time
 from pathlib import Path
 
+from collections import defaultdict
+
 import httpx
 import pandas as pd
 
@@ -94,6 +96,33 @@ def download_mapped_players(
     return n
 
 
+SET_PIECE_SIT = frozenset({"FromCorner", "SetPiece", "DirectFreekick"})
+
+
+def shot_xg_by_match(shots: list, us_year: str) -> tuple[dict[str, float], dict[str, float]]:
+    """Non-penalty open-play xG and set-piece (corner/FK) xG by match_id."""
+    open_xg: dict[str, float] = defaultdict(float)
+    sp_xg: dict[str, float] = defaultdict(float)
+    for s in shots or []:
+        if str(s.get("season")) != us_year:
+            continue
+        mid = str(s.get("match_id") or "")
+        if not mid:
+            continue
+        try:
+            xg = float(s.get("xG") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        sit = s.get("situation") or "OpenPlay"
+        if sit == "Penalty":
+            continue
+        if sit == "OpenPlay":
+            open_xg[mid] += xg
+        else:
+            sp_xg[mid] += xg
+    return dict(open_xg), dict(sp_xg)
+
+
 def _shot_in_box(shot: dict) -> bool:
     try:
         x = float(shot.get("X") or 0)
@@ -110,6 +139,7 @@ def matches_from_player_payload(payload: dict, us_year: str) -> pd.DataFrame:
     for s in shots:
         mid = str(s.get("match_id"))
         box_by_match[mid] = box_by_match.get(mid, 0) + int(_shot_in_box(s))
+    open_xg, sp_xg = shot_xg_by_match(payload.get("shots") or [], us_year)
     rows = []
     for m in payload.get("matches") or []:
         if str(m.get("season")) != us_year:
@@ -133,10 +163,44 @@ def matches_from_player_payload(payload: dict, us_year: str) -> pd.DataFrame:
                 "npxg": pd.to_numeric(m.get("npxG"), errors="coerce"),
                 "xgchain": pd.to_numeric(m.get("xGChain"), errors="coerce"),
                 "xgbuildup": pd.to_numeric(m.get("xGBuildup"), errors="coerce"),
+                "open_npxg": open_xg.get(mid, 0.0),
+                "sp_xg": sp_xg.get(mid, 0.0),
                 "h_team": m.get("h_team"),
                 "a_team": m.get("a_team"),
             }
         )
+    return pd.DataFrame(rows)
+
+
+def load_shot_splits(season: str, settings: Settings | None = None) -> pd.DataFrame:
+    """Open-play / set-piece xG by understat player-match from cached player JSON."""
+    settings = settings or load_settings()
+    year = understat_year(season)
+    cache = _cache_dir(settings, season) / "players"
+    rows: list[dict] = []
+    if not cache.exists():
+        return pd.DataFrame(columns=["understat_id", "match_id", "open_npxg", "sp_xg"])
+    for path in cache.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text())
+            uid = int(payload["player"]["id"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        open_xg, sp_xg = shot_xg_by_match(payload.get("shots") or [], year)
+        mids = set(open_xg) | set(sp_xg)
+        for mid in mids:
+            try:
+                mid_i = int(mid)
+            except (TypeError, ValueError):
+                continue
+            rows.append(
+                {
+                    "understat_id": uid,
+                    "match_id": mid_i,
+                    "open_npxg": open_xg.get(mid, 0.0),
+                    "sp_xg": sp_xg.get(mid, 0.0),
+                }
+            )
     return pd.DataFrame(rows)
 
 
