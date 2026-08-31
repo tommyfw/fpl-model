@@ -1,0 +1,47 @@
+# Mixes are nudges on live config/weights.yaml (never written by this lab).
+# yaml_as_is = production as it stands. Other names move mass toward a parent
+# (boost/by) or add xPts deltas. overall_by_pos / quality_by_pos are nudged
+# from each position's live mix, not replaced by one global blend.
+#
+# Search is factored: Overall×Quality with xPts as-is, and xPts recipes with
+# Overall/Quality as-is.
+
+overall:
+  yaml_as_is: null
+  more_m: {boost: M, by: 0.08}
+  less_m: {boost: M, by: -0.08}
+  more_q: {boost: Q, by: 0.08}
+  more_o: {boost: O, by: 0.08}
+
+quality:
+  yaml_as_is: null
+  more_u: {boost: U, by: 0.08}
+  more_f: {boost: F, by: 0.08}
+
+# Added to live xpts: values (not replacements). Other keys stay.
+xpts:
+  yaml_as_is: null
+  more_l5: {start_l5: 0.15}
+  less_l5: {start_l5: -0.15}
+  mild_fixtures: {fixture_lo: 0.06, fixture_hi: -0.10}
+  hot_fixtures: {fixture_lo: -0.12, fixture_hi: 0.18}
+  cs_up: {cs_scale: 0.15}
+  cs_down: {cs_scale: -0.15}
+  bonus_up: {bonus_scale: 0.20, bps_scale: 0.06}
+  residual_up: {p90_residual: 0.08, p90_residual_def: 0.04}
+  fwd_hot: {fwd_attack_scale: 0.10}
+
+# Final mix pick: 0.7 Spearman + 0.3 Top-20, mean over positions, then seasons.
+# 2025-26 is closer to current FPL (DefCon) and to 2026-27; 2024-25 still
+# regularises against a one-season fluke. Per-season combined tables use the
+# same raw score without the season blend.
+ranking:
+  spearman_weight: 0.7
+  top20_weight: 0.3
+  season_weights:
+    "2024-25": 0.35
+    "2025-26": 0.65
+
+windows:
+  "2024-25": [8, 12, 16, 20, 24, 28, 32]
+  "2025-26": [8, 12, 16, 20, 24, 28, 32]

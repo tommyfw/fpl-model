@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Weight-tune lab</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <h1>Weight-tune lab</h1>
+        <p class="sub">Experimental mixes · does not write live scores</p>
+      </div>
+      <nav class="tabs" id="tabs">
+        <button data-tab="players" class="on">Players</button>
+        <button data-tab="metrics">Grid metrics</button>
+        <button data-tab="xi">£100m XI</button>
+      </nav>
+      <div class="filters">
+        <select id="mix" aria-label="Weight mix"></select>
+        <select id="season" aria-label="Season"></select>
+        <select id="as-of" aria-label="As-of gameweek"></select>
+      </div>
+    </header>
+
+    <section id="view-players" class="view">
+      <div class="filters row-filters">
+        <input id="search" type="search" placeholder="Search player" autocomplete="off" />
+        <select id="sort">
+          <option value="overall">Overall</option>
+          <option value="upside">Upside</option>
+          <option value="xpts">xPts</option>
+          <option value="minutes">Minutes</option>
+          <option value="quality">Quality</option>
+        </select>
+      </div>
+      <nav class="pills" id="pos-pills">
+        <button data-pos="" class="on">All</button>
+        <button data-pos="GK">GK</button>
+        <button data-pos="DEF">DEF</button>
+        <button data-pos="MID">MID</button>
+        <button data-pos="FWD">FWD</button>
+      </nav>
+      <main>
+        <section class="list-pane">
+          <div class="table-head">
+            <span class="c-rank">#</span>
+            <span class="c-name">Player</span>
+            <span class="c-num">Ovr</span>
+            <span class="c-num">Up</span>
+            <span class="c-num">xPts</span>
+            <span class="c-act">Action</span>
+          </div>
+          <div id="rows" class="rows"></div>
+          <p id="empty" class="empty hidden">No caches. Run <code>python run.py</code> then refresh.</p>
+        </section>
+        <section class="card-pane" id="card">
+          <p class="empty">Select a player</p>
+        </section>
+      </main>
+    </section>
+
+    <section id="view-metrics" class="view hidden">
+      <nav class="pills" id="pred-pills">
+        <button data-pred="overall" class="on">Overall ranker</button>
+        <button data-pred="xpts">xPts forecast</button>
+      </nav>
+      <main class="single">
+        <section class="list-pane full metrics-pane">
+          <pre id="holdout" class="holdout"></pre>
+          <div id="rank-boards"></div>
+          <p class="empty hidden" id="rank-empty">No grid_rows.csv. Run <code>python run.py</code> then refresh.</p>
+        </section>
+      </main>
+    </section>
+
+    <section id="view-xi" class="view hidden">
+      <div class="filters row-filters">
+        <label>Budget <input id="xi-budget" type="number" value="100" step="0.1" /></label>
+        <select id="xi-obj">
+          <option value="xpts">xPts</option>
+          <option value="overall">Overall</option>
+        </select>
+        <button type="button" id="xi-go">Build XI</button>
+      </div>
+      <main class="single">
+        <section class="list-pane full" id="xi-out">
+          <p class="empty">Build an XI with the selected mix.</p>
+        </section>
+      </main>
+    </section>
+    <script src="/app.js"></script>
+  </body>
+</html>

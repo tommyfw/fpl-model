@@ -1,0 +1,110 @@
+note: Resolved onto live config/weights.yaml. Not applied to production. Copy by hand
+  if you want it.
+ranking:
+  spearman_weight: 0.7
+  top20_weight: 0.3
+  season_weights:
+    2024-25: 0.35
+    2025-26: 0.65
+grid_specs:
+  overall:
+    more_m:
+      boost: M
+      by: 0.08
+    less_m:
+      boost: M
+      by: -0.08
+    more_q:
+      boost: Q
+      by: 0.08
+    more_o:
+      boost: O
+      by: 0.08
+  quality:
+    more_u:
+      boost: U
+      by: 0.08
+    more_f:
+      boost: F
+      by: 0.08
+  xpts:
+    more_l5:
+      start_l5: 0.15
+    less_l5:
+      start_l5: -0.15
+    mild_fixtures:
+      fixture_lo: 0.06
+      fixture_hi: -0.1
+    hot_fixtures:
+      fixture_lo: -0.12
+      fixture_hi: 0.18
+    cs_up:
+      cs_scale: 0.15
+    cs_down:
+      cs_scale: -0.15
+    bonus_up:
+      bonus_scale: 0.2
+      bps_scale: 0.06
+    residual_up:
+      p90_residual: 0.08
+      p90_residual_def: 0.04
+    fwd_hot:
+      fwd_attack_scale: 0.1
+overall_mix: yaml_as_is__more_f__yaml_as_is
+overall_final_u: 0.6765771576145896
+overall:
+  Q: 0.3024
+  M: 0.58
+  O: 0.084
+  V: 0.0336
+overall_by_pos:
+  DEF:
+    Q: 0.3024
+    M: 0.58
+    O: 0.084
+    V: 0.0336
+  MID:
+    Q: 0.3024
+    M: 0.58
+    O: 0.084
+    V: 0.0336
+  FWD:
+    Q: 0.3024
+    M: 0.58
+    O: 0.084
+    V: 0.0336
+  GK:
+    Q: 0.3024
+    M: 0.58
+    O: 0.084
+    V: 0.0336
+quality:
+  U: 0.34612258064516127
+  F: 0.46
+  R: 0.1245483870967742
+  T: 0.06932903225806453
+quality_by_pos:
+  MID:
+    U: 0.2567241379310345
+    F: 0.5
+    R: 0.1621551724137931
+    T: 0.08112068965517243
+  DEF:
+    U: 0.28379310344827585
+    F: 0.5
+    R: 0.1621551724137931
+    T: 0.054051724137931044
+  FWD:
+    U: 0.3378448275862069
+    F: 0.5
+    R: 0.12155172413793101
+    T: 0.04060344827586207
+  GK:
+    U: 0.3378448275862069
+    F: 0.5
+    R: 0.12155172413793101
+    T: 0.04060344827586207
+xpts_mix: yaml_as_is__yaml_as_is__fwd_hot
+xpts_final_u: 0.7181374015573454
+xpts:
+  fwd_attack_scale: 1.2000000000000002
