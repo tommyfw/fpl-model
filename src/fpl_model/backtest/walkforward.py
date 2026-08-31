@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 
 import pandas as pd
 from scipy.stats import spearmanr
 
-from fpl_model.config import Settings, load_settings
+from fpl_model.config import Settings, load_settings, load_weights
 from fpl_model.db import connect
 from fpl_model.features.asof import build_features_for_asof, persist_features
 from fpl_model.scoring.engine import persist_scores, score_feature_frame
-from fpl_model.config import load_weights
 
 
 def actual_points(conn: sqlite3.Connection, season: str, start_gw: int, horizon: int) -> pd.DataFrame:
@@ -25,8 +25,19 @@ def actual_points(conn: sqlite3.Connection, season: str, start_gw: int, horizon:
     )
 
 
-def walkforward(season: str, settings: Settings | None = None, min_gw: int | None = None, max_gw: int | None = None) -> pd.DataFrame:
+def walkforward(
+    season: str,
+    settings: Settings | None = None,
+    min_gw: int | None = None,
+    max_gw: int | None = None,
+    horizon: int | None = None,
+    persist: bool | None = None,
+) -> pd.DataFrame:
     settings = settings or load_settings()
+    if horizon is not None:
+        settings = replace(settings, horizon_gws=horizon)
+    if persist is None:
+        persist = horizon is None
     weights = load_weights()
     conn = connect(settings)
     max_round = pd.read_sql_query(
@@ -44,9 +55,10 @@ def walkforward(season: str, settings: Settings | None = None, min_gw: int | Non
         feats = build_features_for_asof(conn, season, t, settings)
         if feats.empty:
             continue
-        persist_features(conn, season, t, feats)
         scored = score_feature_frame(feats, weights, settings)
-        persist_scores(conn, season, t, scored)
+        if persist:
+            persist_features(conn, season, t, feats)
+            persist_scores(conn, season, t, scored)
         actual = actual_points(conn, season, t, settings.horizon_gws)
         merged = scored.merge(actual, on="fpl_id", how="left")
         merged["actual_points"] = merged["actual_points"].fillna(0)

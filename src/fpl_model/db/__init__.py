@@ -24,8 +24,13 @@ def init_db(conn: sqlite3.Connection | None = None, settings: Settings | None = 
         close = False
     schema = SCHEMA_PATH.read_text()
     conn.executescript(schema)
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(map_player_ids)").fetchall()}
-    if "match_method" not in cols:
-        conn.execute("ALTER TABLE map_player_ids ADD COLUMN match_method TEXT")
+    def _ensure(table: str, col: str, spec: str) -> None:
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if col not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {spec}")
+
+    _ensure("map_player_ids", "match_method", "TEXT")
+    _ensure("dim_player", "code", "INTEGER")
+    _ensure("dim_player", "selected_by_percent", "REAL")
     conn.commit()
     return conn

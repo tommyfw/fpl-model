@@ -77,6 +77,7 @@ def download_mapped_players(
     season: str,
     settings: Settings | None = None,
     pause: float = 0.12,
+    force: bool = False,
 ) -> int:
     settings = settings or load_settings()
     n = 0
@@ -84,8 +85,8 @@ def download_mapped_players(
         client.get("https://understat.com/league/EPL/" + understat_year(season))
         for i, uid in enumerate(understat_ids):
             dest = _cache_dir(settings, season) / "players" / f"{uid}.json"
-            cached = dest.exists() and dest.stat().st_size > 0
-            data = download_player(uid, season, settings, client=client)
+            cached = dest.exists() and dest.stat().st_size > 0 and not force
+            data = download_player(uid, season, settings, force=force, client=client)
             if data:
                 n += 1
             if pause and not cached and i + 1 < len(understat_ids):
@@ -248,7 +249,9 @@ def write_id_map_review(conn, season: str, path: Path | None = None) -> Path:
     return dest
 
 
-def store_understat_facts(conn, season: str, league: dict, settings: Settings | None = None) -> tuple[int, int]:
+def store_understat_facts(
+    conn, season: str, league: dict, settings: Settings | None = None, force: bool = False
+) -> tuple[int, int]:
     settings = settings or load_settings()
     year = understat_year(season)
     conn.execute("DELETE FROM fact_understat_player_match WHERE season = ?", (season,))
@@ -264,7 +267,7 @@ def store_understat_facts(conn, season: str, league: dict, settings: Settings | 
         params=(season,),
     )
     ids = [int(x) for x in mapped["understat_id"].dropna().tolist()]
-    n_players = download_mapped_players(ids, season, settings)
+    n_players = download_mapped_players(ids, season, settings, force=force)
     frames = []
     cache = _cache_dir(settings, season) / "players"
     for uid in ids:

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FPL player cards</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <h1>FPL model</h1>
+        <p class="sub" id="horizon-label">Next 5 GWs · as-of scores</p>
+      </div>
+      <nav class="tabs" id="tabs">
+        <button data-tab="players" class="on">Players</button>
+        <button data-tab="shortlist">Shortlist</button>
+        <button data-tab="xi">£100m XI</button>
+        <button data-tab="team">My team</button>
+        <button data-tab="fixtures">Fixtures</button>
+      </nav>
+      <div class="filters">
+        <select id="season" aria-label="Season"></select>
+        <select id="as-of" aria-label="As-of gameweek"></select>
+      </div>
+    </header>
+
+    <section id="view-players" class="view">
+      <div class="filters row-filters">
+        <input id="search" type="search" placeholder="Search player" autocomplete="off" />
+        <select id="sort" aria-label="Sort">
+          <option value="overall">Overall</option>
+          <option value="upside">Upside</option>
+          <option value="xpts">xPts</option>
+          <option value="value">Value</option>
+          <option value="quality">Quality</option>
+          <option value="minutes">Minutes</option>
+          <option value="fixtures">Fixtures</option>
+        </select>
+      </div>
+      <nav class="pills" id="pos-pills">
+        <button data-pos="" class="on">All</button>
+        <button data-pos="GK">GK</button>
+        <button data-pos="DEF">DEF</button>
+        <button data-pos="MID">MID</button>
+        <button data-pos="FWD">FWD</button>
+      </nav>
+      <nav class="pills actions" id="action-pills">
+        <button data-action="" class="on">Any action</button>
+        <button data-action="STRONG BUY">STRONG BUY</button>
+        <button data-action="BUY">BUY</button>
+        <button data-action="HOLD">HOLD</button>
+        <button data-action="AVOID">AVOID</button>
+      </nav>
+      <main>
+        <section class="list-pane">
+          <div class="table-head">
+            <span class="c-star"></span>
+            <span class="c-rank">#</span>
+            <span class="c-name">Player</span>
+            <span class="c-num">Ovr</span>
+            <span class="c-num">Up</span>
+            <span class="c-num">xPts</span>
+            <span class="c-act">Action</span>
+          </div>
+          <div id="rows" class="rows"></div>
+          <p id="empty" class="empty hidden">No scores. Run <code>fpl-model update</code> then refresh.</p>
+        </section>
+        <section class="card-pane" id="card">
+          <p class="empty">Select a player</p>
+        </section>
+      </main>
+    </section>
+
+    <section id="view-shortlist" class="view hidden">
+      <main class="single">
+        <section class="list-pane full">
+          <div class="table-head">
+            <span class="c-star"></span>
+            <span class="c-rank">#</span>
+            <span class="c-name">Player</span>
+            <span class="c-num">Ovr</span>
+            <span class="c-num">Up</span>
+            <span class="c-num">xPts</span>
+            <span class="c-act">Action</span>
+          </div>
+          <div id="short-rows" class="rows"></div>
+          <p id="short-empty" class="empty">Star players from the Players tab to build a shortlist.</p>
+        </section>
+      </main>
+    </section>
+
+    <section id="view-xi" class="view hidden">
+      <div class="xi-controls">
+        <label>Objective
+          <select id="xi-objective">
+            <option value="xpts">xPts</option>
+            <option value="overall">Overall</option>
+          </select>
+        </label>
+        <label>Budget £
+          <input id="xi-budget" type="number" min="80" max="120" step="0.5" value="100" />
+        </label>
+        <button id="xi-build" class="primary">Build squad</button>
+        <button id="xi-save-team" class="ghost">Save as my team</button>
+        <span id="xi-summary" class="xi-summary"></span>
+      </div>
+      <main class="xi-main">
+        <section class="list-pane xi-board" id="xi-board">
+          <p class="empty">Build a £100m squad from current as-of scores.</p>
+        </section>
+      </main>
+    </section>
+
+    <section id="view-team" class="view hidden">
+      <div class="xi-controls">
+        <label>Bank £
+          <input id="team-bank" type="number" min="0" max="20" step="0.1" value="0" />
+        </label>
+        <label>Free transfers
+          <input id="team-ft" type="number" min="0" max="5" step="1" value="1" />
+        </label>
+        <label>Objective
+          <select id="team-objective">
+            <option value="xpts">xPts</option>
+            <option value="overall">Overall</option>
+          </select>
+        </label>
+        <button id="team-suggest" class="primary">Suggest transfers</button>
+        <button id="team-clear" class="ghost">Clear team</button>
+        <span id="team-summary" class="xi-summary"></span>
+      </div>
+      <main class="xi-main team-layout">
+        <section class="list-pane xi-board" id="team-board">
+          <p class="empty">Save a 15-man squad from the £100m XI tab, or add players with “+ Team” on a card.</p>
+        </section>
+        <section class="list-pane xi-board" id="transfer-board">
+          <p class="empty">Transfer suggestions appear here.</p>
+        </section>
+      </main>
+    </section>
+
+    <section id="view-fixtures" class="view hidden">
+      <div class="xi-controls">
+        <span class="xi-summary">Attack ease uses team xG shrunk toward last season (promoted → PL average). Sorted by mean Fixtures (O).</span>
+      </div>
+      <main class="xi-main">
+        <section class="list-pane xi-board" id="fixture-board">
+          <p class="empty">Loading fixtures…</p>
+        </section>
+      </main>
+    </section>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

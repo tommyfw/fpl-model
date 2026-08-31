@@ -35,6 +35,7 @@ TEAM_ALIASES = {
     "sheffield utd": "sheffield",
     "leicester city": "leicester",
     "ipswich town": "ipswich",
+    "ipswich": "ipswich",
     "leeds united": "leeds",
     "leeds": "leeds",
     "sunderland": "sunderland",
@@ -43,6 +44,10 @@ TEAM_ALIASES = {
     "bournemouth": "bournemouth",
     "crystal palace": "palace",
     "aston villa": "villa",
+    "hull city": "hull",
+    "hull": "hull",
+    "coventry city": "coventry",
+    "coventry": "coventry",
 }
 
 
@@ -67,6 +72,11 @@ def team_key(text: str | None) -> str:
     for alias, key in TEAM_ALIASES.items():
         if alias in s or s in alias:
             return key
+    # "Hull City" / "Coventry City" → hull / coventry (matches Understat titles)
+    s = re.sub(r"\b(city|town|united|afc)\b", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if s in TEAM_ALIASES:
+        return TEAM_ALIASES[s]
     return s.replace(" ", "")
 
 
@@ -136,12 +146,33 @@ def map_players(fpl: pd.DataFrame, understat: pd.DataFrame, aliases: list[dict] 
     for a in aliases:
         uid = a.get("understat_id")
         fid = a.get("fpl_id")
-        if uid is None or fid is None:
+        if uid is None:
             continue
         urow = us_by_id.get(int(uid))
         if urow is None and a.get("understat_name"):
             urow = us_by_name.get(normalize_name(a["understat_name"]))
-        frow = fpl_by_id.get(int(fid))
+        frow = fpl_by_id.get(int(fid)) if fid is not None else None
+        alias_name = normalize_name(a.get("fpl_name") or "")
+        if frow is not None and alias_name:
+            blob = f"{frow['full']} {frow['web']}"
+            if alias_name not in blob and frow["full"] not in alias_name and frow["last"] != last_name(alias_name):
+                frow = None
+        if frow is None and alias_name:
+            cands = [
+                r
+                for _, r in fpl.iterrows()
+                if int(r["fpl_id"]) not in used_fpl
+                and (
+                    alias_name in r["full"]
+                    or r["full"] in alias_name
+                    or r["web"] == last_name(alias_name)
+                    or r["last"] == last_name(alias_name)
+                )
+            ]
+            if len(cands) > 1:
+                cands = [c for c in cands if c["last"] == last_name(alias_name)]
+            if len(cands) == 1:
+                frow = cands[0]
         if urow is not None and frow is not None:
             _add(frow, urow, "manual_alias")
 

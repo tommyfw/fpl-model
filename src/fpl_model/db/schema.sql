@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS dim_player (
     corners_order INTEGER,
     direct_fk_order INTEGER,
     now_cost INTEGER,
+    code INTEGER,
+    selected_by_percent REAL,
     PRIMARY KEY (season, fpl_id)
 );
 
@@ -167,3 +169,25 @@ CREATE TABLE IF NOT EXISTS fact_understat_team_match (
 
 CREATE INDEX IF NOT EXISTS idx_us_player_date ON fact_understat_player_match (season, understat_id, date);
 CREATE INDEX IF NOT EXISTS idx_us_team_date ON fact_understat_team_match (season, date);
+
+CREATE TABLE IF NOT EXISTS fact_fbref_player (
+    season TEXT NOT NULL,
+    player TEXT NOT NULL,
+    squad TEXT,
+    minutes REAL,
+    shots REAL,
+    shots_on_target REAL,
+    tkl REAL,
+    interceptions REAL,
+    blocks REAL,
+    clearances REAL,
+    PRIMARY KEY (season, player, squad)
+);
+
+CREATE TABLE IF NOT EXISTS map_fbref (
+    season TEXT,
+    fpl_id INTEGER,
+    fbref_player TEXT,
+    squad TEXT,
+    match_method TEXT
+);

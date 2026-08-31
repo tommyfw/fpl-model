@@ -29,3 +29,5 @@ def test_upcoming_fixtures_are_horizon_only():
     upc = upcoming_fixtures(fx, as_of_gw=10, horizon=5)
     assert set(upc["event"]) == {10, 11, 14}
     assert upc["event"].max() <= 14
+    upc10 = upcoming_fixtures(fx, as_of_gw=10, horizon=10)
+    assert set(upc10["event"]) == {10, 11, 14, 15}

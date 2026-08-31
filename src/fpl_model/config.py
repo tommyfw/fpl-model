@@ -25,6 +25,11 @@ class Settings:
     horizon_gws: int
     min_minutes_for_rates: int
     shrink_prior_minutes: int
+    max_prior_weight: float
+    max_playing_prior_weight: float
+    prior_playing_grace_matches: int
+    dampen_unused_minutes: bool
+    team_prior_matches: int
     defcon_threshold: dict[str, int | None]
 
     @property
@@ -47,6 +52,11 @@ def load_settings(path: Path | None = None) -> Settings:
         horizon_gws=int(raw["horizon_gws"]),
         min_minutes_for_rates=int(raw["min_minutes_for_rates"]),
         shrink_prior_minutes=int(raw["shrink_prior_minutes"]),
+        max_prior_weight=float(raw.get("max_prior_weight", 0.85)),
+        max_playing_prior_weight=float(raw.get("max_playing_prior_weight", 0.55)),
+        prior_playing_grace_matches=int(raw.get("prior_playing_grace_matches", 3)),
+        dampen_unused_minutes=bool(raw.get("dampen_unused_minutes", True)),
+        team_prior_matches=int(raw.get("team_prior_matches", 8)),
         defcon_threshold=dict(raw["defcon_threshold"]),
     )
 

@@ -159,6 +159,7 @@ def load_season(season: str, settings: Settings | None = None, skip_understat: b
             "corners_order": pd.to_numeric(players.get("corners_and_indirect_freekicks_order"), errors="coerce"),
             "direct_fk_order": pd.to_numeric(players.get("direct_freekicks_order"), errors="coerce"),
             "now_cost": players.get("now_cost"),
+            "code": pd.to_numeric(players.get("code"), errors="coerce"),
         }
     )
     _to_sql(conn, dim_player, "dim_player")

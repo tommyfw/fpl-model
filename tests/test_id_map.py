@@ -12,6 +12,8 @@ def test_team_aliases():
     assert team_key("Man City") == team_key("Manchester City")
     assert team_key("Spurs") == team_key("Tottenham")
     assert team_key("Nott'm Forest") == team_key("Nottingham Forest")
+    assert team_key("Hull City") == team_key("Hull")
+    assert team_key("Coventry City") == team_key("Coventry")
 
 
 def test_map_exact_and_last_team_and_unmatched():
@@ -78,3 +80,27 @@ def test_manual_alias_overrides_before_auto():
     linked = m.dropna(subset=["fpl_id", "understat_id"])
     assert int(linked.iloc[0]["understat_id"]) == 2496
     assert linked.iloc[0]["match_method"] == "manual_alias"
+
+
+def test_manual_alias_uses_name_when_fpl_id_is_from_another_season():
+    fpl = pd.DataFrame(
+        [
+            {"fpl_id": 999, "first_name": "Rodrigo", "second_name": "Hernandez Cascante", "web_name": "Rodri", "team_name": "Man City"},
+            {"fpl_id": 10, "first_name": "Someone", "second_name": "Else", "web_name": "Else", "team_name": "Arsenal"},
+        ]
+    )
+    us = pd.DataFrame([{"understat_id": 2496, "player_name": "Rodri", "team_title": "Manchester City"}])
+    m = map_players(
+        fpl,
+        us,
+        aliases=[
+            {
+                "understat_id": 2496,
+                "fpl_id": 10,
+                "fpl_name": "Rodrigo Hernandez Cascante",
+                "understat_name": "Rodri",
+            }
+        ],
+    )
+    linked = m.dropna(subset=["fpl_id", "understat_id"])
+    assert int(linked.iloc[0]["fpl_id"]) == 999

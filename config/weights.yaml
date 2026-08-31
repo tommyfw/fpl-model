@@ -1,43 +1,108 @@
 # All parent weights sum to 1. Leaf weights sum to 1 within each block.
 
+# Default mix when a position has no overall_by_pos entry.
 overall:
-  Q: 0.50
-  M: 0.20
-  O: 0.20
-  V: 0.10
+  Q: 0.40
+  M: 0.40
+  O: 0.14
+  V: 0.06
+
+# Minutes are the strongest rank signal in both 2024-25 and 2025-26.
+# Keep O > 0 so blanks/DGWs still move the card; MID less than DEF/FWD/GK.
+overall_by_pos:
+  DEF:
+    Q: 0.36
+    M: 0.46
+    O: 0.12
+    V: 0.06
+  MID:
+    Q: 0.36
+    M: 0.50
+    O: 0.08
+    V: 0.06
+  FWD:
+    Q: 0.38
+    M: 0.46
+    O: 0.12
+    V: 0.04
+  GK:
+    Q: 0.36
+    M: 0.50
+    O: 0.10
+    V: 0.04
 
 quality:
-  U: 0.45
-  F: 0.20
-  R: 0.20
-  T: 0.15
+  U: 0.50
+  F: 0.22
+  R: 0.18
+  T: 0.10
+
+quality_by_pos:
+  MID:
+    U: 0.38
+    F: 0.26
+    R: 0.24
+    T: 0.12
+  DEF:
+    U: 0.42
+    F: 0.26
+    R: 0.24
+    T: 0.08
+  FWD:
+    U: 0.50
+    F: 0.26
+    R: 0.18
+    T: 0.06
+  GK:
+    U: 0.50
+    F: 0.26
+    R: 0.18
+    T: 0.06
 
 underlying:
   MID:
-    npxgi90: 0.25
-    npxg90: 0.10
+    npxgi90: 0.12
+    npxgi90_l5: 0.16
+    npxg90: 0.08
     npxa90: 0.10
-    shots_in_box90: 0.10
+    shots_in_box90: 0.07
+    fbref_shots90: 0.04
     key_passes90: 0.10
-    defcon_hit_rate: 0.15
+    defcon_hit_rate: 0.08
+    fbref_cbit90: 0.04
+    xgchain90: 0.08
+    chance_quality90: 0.13
+  MID_DM:
+    npxgi90: 0.10
+    npxgi90_l5: 0.06
+    npxg90: 0.04
+    npxa90: 0.06
+    shots_in_box90: 0.04
+    fbref_shots90: 0.03
+    key_passes90: 0.08
+    defcon_hit_rate: 0.24
+    fbref_cbit90: 0.12
     xgchain90: 0.10
-    chance_quality90: 0.10
+    chance_quality90: 0.13
   FWD:
-    npxgi90: 0.40
+    npxgi90: 0.36
     npxg90: 0.10
     npxa90: 0.10
-    shots_in_box90: 0.10
+    shots_in_box90: 0.07
+    fbref_shots90: 0.07
     key_passes90: 0.10
     xgchain90: 0.10
     chance_quality90: 0.10
   DEF:
-    p_clean_sheet: 0.35
-    team_defence: 0.25
-    defcon_hit_rate: 0.10
+    p_clean_sheet: 0.28
+    team_defence: 0.20
+    defcon_hit_rate: 0.12
+    fbref_cbit90: 0.10
     npxgi90: 0.10
-    shots_in_box90: 0.05
+    shots_in_box90: 0.04
+    fbref_shots90: 0.03
     key_passes90: 0.05
-    chance_quality90: 0.10
+    chance_quality90: 0.08
   GK:
     p_clean_sheet: 0.40
     saves90: 0.25
@@ -54,9 +119,9 @@ fpl_output:
 
 role:
   pitch_position: 0.25
-  attacking_involvement: 0.25
+  attacking_involvement: 0.31
   set_pieces: 0.15
-  penalties: 0.20
+  penalties: 0.14
   advanced_central: 0.10
   tactical_importance: 0.05
 
@@ -67,9 +132,9 @@ team_mix:
   GK: {attack: 0.1, defence: 0.9}
 
 minutes:
-  start_pct: 0.40
-  minutes_pct: 0.25
-  rotation: 0.20
+  start_pct: 0.34
+  minutes_pct: 0.23
+  rotation: 0.28
   availability: 0.15
 
 form:
@@ -117,3 +182,19 @@ upside:
   role_change: 0.10
   price: 0.10
   ownership: 0.10
+
+# Point-unit forecast for XI / transfers (not a ranker).
+xpts:
+  start_l5: 0.55
+  recency: 0.45
+  fixture_lo: 0.85
+  fixture_hi: 1.22
+  assist: 3.0
+  defcon: 2.0
+  save_per_pt: 3.0
+  # Poisson P(CS) overstates FPL CS (60+ mins, late goals). Attack stays unscaled.
+  cs_scale: 0.65
+  defcon_def: 1.5
+  fwd_attack_scale: 1.10
+  p90_residual: 0.18
+  p90_residual_def: 0.08

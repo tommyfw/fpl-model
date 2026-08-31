@@ -2,15 +2,26 @@ data_dir: data
 db_path: data/fpl.sqlite
 vaastav_base_url: https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master
 seasons:
+  - "2026-27"
   - "2025-26"
   - "2024-25"
   - "2023-24"
-default_season: "2025-26"
+# Live scoring uses 2026-27. 2025-26 stays in the DB as a prior + backtest season (not pooled).
+default_season: "2026-27"
 min_as_of_gw: 8
 max_as_of_gw: 34
 horizon_gws: 5
 min_minutes_for_rates: 90
 shrink_prior_minutes: 450
+# Cap last-season rate blend so unused players are not 100% prior (rest = position mean).
+max_prior_weight: 0.85
+# Playing-time prior is more dangerous (inflates backups). Cap harder, then drop it
+# entirely after this many team matches with zero starts.
+max_playing_prior_weight: 0.55
+prior_playing_grace_matches: 3
+dampen_unused_minutes: true
+# Blend current-season team xG with prior-season rates (promoted → PL average).
+team_prior_matches: 8
 defcon_threshold:
   DEF: 10
   MID: 12
