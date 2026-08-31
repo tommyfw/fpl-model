@@ -264,6 +264,7 @@ def load_live_season(season: str | None = None, settings: Settings | None = None
             "status": elements.get("status"),
             "chance_of_playing_this": pd.to_numeric(elements.get("chance_of_playing_this_round"), errors="coerce"),
             "chance_of_playing_next": pd.to_numeric(elements.get("chance_of_playing_next_round"), errors="coerce"),
+            "news": elements.get("news"),
             "penalties_order": pd.to_numeric(elements.get("penalties_order"), errors="coerce"),
             "corners_order": pd.to_numeric(elements.get("corners_and_indirect_freekicks_order"), errors="coerce"),
             "direct_fk_order": pd.to_numeric(elements.get("direct_freekicks_order"), errors="coerce"),

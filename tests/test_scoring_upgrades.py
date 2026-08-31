@@ -66,6 +66,31 @@ def test_gk_u_does_not_use_fpl_output_leaf():
     assert "shot_stopping" in w["underlying"]["GK"]
 
 
+def test_own_xg_lifts_attack_xpts():
+    settings = load_settings()
+    weights = load_weights()
+    weak = json.dumps({"2": [{"home": 1, "opp_defence_leak": 1.2, "opp_attack": 1.2, "p_cs": 0.2, "own_xg": 0.7}]})
+    strong = json.dumps({"2": [{"home": 1, "opp_defence_leak": 1.2, "opp_attack": 1.2, "p_cs": 0.2, "own_xg": 2.0}]})
+    cols = {
+        "position": ["MID", "MID"],
+        "start_pct": [1.0, 1.0],
+        "start_pct_l5": [1.0, 1.0],
+        "minutes_pct": [0.95, 0.95],
+        "availability": [1.0, 1.0],
+        "matches": [10, 10],
+        "npxg90": [0.3, 0.3],
+        "npxa90": [0.2, 0.2],
+        "saves90": [0.0, 0.0],
+        "points90": [5.0, 5.0],
+        "bonus90": [0.2, 0.2],
+        "bps90": [20.0, 20.0],
+        "defcon_hit_rate": [0.2, 0.2],
+        "fixtures_json": [weak, strong],
+    }
+    x = compute_xpts(pd.DataFrame(cols), weights, settings)
+    assert x.iloc[1] > x.iloc[0]
+
+
 def test_bonus_raises_attacker_xpts():
     settings = load_settings()
     weights = load_weights()

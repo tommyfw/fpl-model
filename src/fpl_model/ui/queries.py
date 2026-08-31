@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from typing import Any
 
@@ -8,6 +9,18 @@ import pandas as pd
 
 from fpl_model.config import Settings, load_settings
 from fpl_model.features.asof import upcoming_fixtures
+from fpl_model.scoring.clean_sheet import (
+    ATTACK_EASE_EASY,
+    ATTACK_EASE_HARD,
+    ATTACK_FDR_CUTS,
+    PCS_EASY,
+    PCS_FDR_CUTS,
+    PCS_HARD,
+    attack_fixture_ease,
+    ease_band,
+    fdr_from_cuts,
+    pack_match_for_team,
+)
 from fpl_model.squad.transfers import suggest_transfers
 
 
@@ -42,7 +55,7 @@ def list_players(
     position: str | None = None,
     q: str | None = None,
     action: str | None = None,
-    sort: str = "overall",
+    sort: str = "xpts",
     limit: int = 400,
     ids: list[int] | None = None,
 ) -> list[dict[str, Any]]:
@@ -56,7 +69,7 @@ def list_players(
         "fixtures": "s.O",
         "price": "COALESCE(f.price, p.now_cost / 10.0)",
     }
-    order = sort_map.get(sort, "s.overall")
+    order = sort_map.get(sort, "s.xpts")
     where = ["s.season = ?", "s.as_of_gw = ?"]
     params: list[Any] = [season, as_of_gw]
     if position:
@@ -251,7 +264,7 @@ def _team_maps(conn: sqlite3.Connection, season: str) -> tuple[dict[int, str], d
 
 
 def _strength_lookup(conn: sqlite3.Connection, season: str, as_of_gw: int) -> dict[int, dict[str, float]]:
-    """Team attack / defence proxies from as-of features (mean across squad)."""
+    """Venue-split team xG from as-of features (same rates the scorer packed)."""
     rows = conn.execute(
         """
         SELECT team_id, features_json
@@ -260,23 +273,46 @@ def _strength_lookup(conn: sqlite3.Connection, season: str, as_of_gw: int) -> di
         """,
         (season, as_of_gw),
     ).fetchall()
-    acc: dict[int, list[tuple[float, float]]] = {}
+    keys = (
+        "team_attack",
+        "team_defence",
+        "team_attack_home",
+        "team_attack_away",
+        "team_defence_home",
+        "team_defence_away",
+        "team_tilt",
+    )
+    acc: dict[int, list[dict[str, float]]] = {}
     for r in rows:
         feats = json.loads(r["features_json"]) if r["features_json"] else {}
-        att = feats.get("team_attack")
-        deff = feats.get("team_defence")
-        if att is None and deff is None:
+        parsed: dict[str, float] = {}
+        for k in keys:
+            v = feats.get(k)
+            if v is None:
+                continue
+            try:
+                parsed[k] = float(v)
+            except (TypeError, ValueError):
+                continue
+        if not parsed:
             continue
-        try:
-            acc.setdefault(int(r["team_id"]), []).append((float(att or 0), float(deff or 0)))
-        except (TypeError, ValueError):
-            continue
+        att = parsed.get("team_attack")
+        deff = parsed.get("team_defence")
+        if att is not None:
+            parsed.setdefault("team_attack_home", att)
+            parsed.setdefault("team_attack_away", att)
+        if deff is not None:
+            parsed.setdefault("team_defence_home", deff)
+            parsed.setdefault("team_defence_away", deff)
+        acc.setdefault(int(r["team_id"]), []).append(parsed)
     out: dict[int, dict[str, float]] = {}
     for tid, vals in acc.items():
-        out[tid] = {
-            "attack": sum(v[0] for v in vals) / len(vals),
-            "defence": sum(v[1] for v in vals) / len(vals),
-        }
+        merged: dict[str, float] = {}
+        for k in keys:
+            nums = [v[k] for v in vals if k in v]
+            if nums:
+                merged[k] = sum(nums) / len(nums)
+        out[tid] = merged
     return out
 
 
@@ -335,12 +371,10 @@ def fixture_ticker(
     ).fetchall()
     o_by_team = {int(r["team_id"]): r for r in o_rows if int(r["n"]) >= 3}
 
-    mean_att = (
-        sum(v["attack"] for v in strength.values()) / len(strength) if strength else 1.2
-    )
-    mean_def = (
-        sum(v["defence"] for v in strength.values()) / len(strength) if strength else -1.2
-    )
+    atk_vals = [v["team_attack"] for v in strength.values() if "team_attack" in v]
+    league_xg = float(sum(atk_vals) / len(atk_vals)) if atk_vals else 1.35
+    if not math.isfinite(league_xg) or league_xg <= 0.4:
+        league_xg = 1.35
 
     teams_out = []
     for tid, abbr in sorted(short.items(), key=lambda x: x[1] or ""):
@@ -351,21 +385,34 @@ def fixture_ticker(
         for _, fr in fxs.sort_values("event").iterrows():
             home = int(fr["team_h"]) == tid
             opp = int(fr["team_a"]) if home else int(fr["team_h"])
-            opp_att = strength.get(opp, {}).get("attack", mean_att)
-            opp_def = strength.get(opp, {}).get("defence", mean_def)
-            attack_ease = float(-opp_def)  # leaky defence = good for attackers
-            def_ease = float(-opp_att)  # weak attack = good for CS
-            att_ease_vals.append(attack_ease)
-            def_ease_vals.append(def_ease)
+            packed = pack_match_for_team(
+                home=home,
+                team_id=tid,
+                opp_id=opp,
+                lookup=strength,
+                league_xg=league_xg,
+                position="MID",
+            )
+            leak = float(packed["opp_defence_leak"])
+            own_xg = float(packed["own_xg"])
+            pcs = float(packed["p_cs"])
+            att_ease = attack_fixture_ease(leak, own_xg, league_xg)
+            att_ease_vals.append(att_ease)
+            def_ease_vals.append(pcs)
+            ha = "H" if home else "A"
             fixtures.append(
                 {
                     "event": int(fr["event"]),
                     "opp": short.get(opp, str(opp)),
                     "opp_name": names.get(opp, ""),
                     "home": home,
-                    "label": f"{short.get(opp, opp)} ({'H' if home else 'A'})",
-                    "attack_ease": round(attack_ease, 2),
-                    "def_ease": round(def_ease, 2),
+                    "label": f"{short.get(opp, opp)} ({ha})",
+                    "attack_ease": round(att_ease, 2),
+                    "def_ease": round(pcs, 3),
+                    "leak": round(leak, 2),
+                    "own_xg": round(own_xg, 2),
+                    "p_cs": round(pcs, 3),
+                    "opp_xg": round(float(packed["opp_attack"]), 2),
                     "blank": False,
                 }
             )
@@ -382,6 +429,10 @@ def fixture_ticker(
                         "label": "BLNK",
                         "attack_ease": 0.0,
                         "def_ease": 0.0,
+                        "leak": None,
+                        "own_xg": None,
+                        "p_cs": None,
+                        "opp_xg": None,
                         "blank": True,
                     }
                 )
@@ -395,10 +446,32 @@ def fixture_ticker(
                 "avg_fixtures": _round(oinfo["avg_o"], 1) if oinfo else None,
                 "avg_overall": _round(oinfo["avg_overall"], 1) if oinfo else None,
                 "attack_ease_avg": round(sum(att_ease_vals) / len(att_ease_vals), 2) if att_ease_vals else None,
-                "def_ease_avg": round(sum(def_ease_vals) / len(def_ease_vals), 2) if def_ease_vals else None,
+                "def_ease_avg": round(sum(def_ease_vals) / len(def_ease_vals), 3) if def_ease_vals else None,
                 "fixtures": fixtures,
             }
         )
+
+    for t in teams_out:
+        for f in t["fixtures"]:
+            if f["blank"]:
+                f["attack_band"] = "blank"
+                f["def_band"] = "blank"
+                f["rating"] = None
+                f["title"] = "Blank"
+                continue
+            ease = float(f["attack_ease"])
+            leak = float(f["leak"])
+            pcs = float(f["p_cs"])
+            f["attack_band"] = ease_band(ease, ATTACK_EASE_HARD, ATTACK_EASE_EASY, higher_is_easier=True)
+            f["def_band"] = ease_band(pcs, PCS_HARD, PCS_EASY, higher_is_easier=True)
+            f["rating"] = fdr_from_cuts(ease, ATTACK_FDR_CUTS, higher_is_easier=True)
+            f["def_rating"] = fdr_from_cuts(pcs, PCS_FDR_CUTS, higher_is_easier=True)
+            f["title"] = (
+                f"{f['opp_name'] or f['opp']} ({'H' if f['home'] else 'A'}) · "
+                f"ease {ease:.2f} (leak {leak:.2f} × own xG {f['own_xg']:.2f}) · "
+                f"P(CS) {pcs:.0%} · {f['rating']}"
+            )
+
     teams_out.sort(key=lambda t: (-(t["avg_fixtures"] or 0), t["team"] or ""))
     return {
         "season": season,

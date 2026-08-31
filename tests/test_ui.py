@@ -76,6 +76,57 @@ def test_list_and_get_player():
     assert empty == []
 
 
+def test_fixture_ticker_uses_pack_and_league_bands():
+    conn = _conn()
+    conn.execute(
+        "INSERT INTO dim_team(season, team_id, name, short_name) VALUES ('2026-27', 2, 'Burnley', 'BUR')"
+    )
+    leaky = json.dumps(
+        {
+            "team_attack": 1.1,
+            "team_defence": -1.8,
+            "team_attack_home": 1.2,
+            "team_attack_away": 1.0,
+            "team_defence_home": -1.5,
+            "team_defence_away": -2.0,
+        }
+    )
+    tight = json.dumps(
+        {
+            "team_attack": 1.4,
+            "team_defence": -0.9,
+            "team_attack_home": 1.5,
+            "team_attack_away": 1.2,
+            "team_defence_home": -0.8,
+            "team_defence_away": -1.0,
+        }
+    )
+    conn.execute(
+        "UPDATE feat_player_asof SET features_json = ? WHERE fpl_id = 1",
+        (tight,),
+    )
+    conn.execute(
+        """INSERT INTO feat_player_asof(season, as_of_gw, fpl_id, position, team_id, price, features_json)
+           VALUES ('2026-27', 2, 2, 'MID', 2, 5.0, ?)""",
+        (leaky,),
+    )
+    conn.execute(
+        """INSERT INTO fact_fixture(
+            season, fixture_id, event, team_h, team_a, finished, team_h_difficulty, team_a_difficulty
+        ) VALUES ('2026-27', 10, 2, 1, 2, 0, 2, 4)"""
+    )
+    conn.commit()
+    out = queries.fixture_ticker(conn, "2026-27", 2)
+    ars = next(t for t in out["teams"] if t["team_id"] == 1)
+    fx = next(f for f in ars["fixtures"] if not f["blank"])
+    assert abs(fx["leak"] - 2.0) < 1e-9
+    assert fx["home"] is True
+    assert fx["attack_ease"] > fx["leak"]  # strong home attack lifts ease above raw leak
+    assert fx["attack_band"] == "easy"
+    assert "ease" in fx["title"] and "leak" in fx["title"]
+    assert fx["rating"] in (1, 2, 3, 4, 5)
+
+
 def test_lineup_needs_fifteen():
     conn = _conn()
     out = queries.lineup_for_squad(conn, "2026-27", 2, [1])

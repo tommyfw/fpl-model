@@ -50,7 +50,7 @@ def load_team_priors(
 
     ut = pd.read_sql_query(
         """
-        SELECT team_key, xg_for, xg_against
+        SELECT team_key, is_home, xg_for, xg_against
         FROM fact_understat_team_match
         WHERE season = ? AND finished = 1
           AND xg_for IS NOT NULL AND xg_against IS NOT NULL
@@ -58,6 +58,12 @@ def load_team_priors(
         conn,
         params=(prev,),
     )
+    venue_cols = [
+        "prior_attack_home",
+        "prior_attack_away",
+        "prior_defence_home",
+        "prior_defence_away",
+    ]
     if ut.empty:
         # Fallback: scoreline rates from prior FPL fixtures
         fx = pd.read_sql_query(
@@ -81,15 +87,41 @@ def load_team_priors(
         prev_teams["tkey"] = prev_teams["name"].map(team_key)
         rows = []
         for _, r in fx.iterrows():
-            rows.append({"team_id": r["team_h"], "gf": r["team_h_score"], "ga": r["team_a_score"]})
-            rows.append({"team_id": r["team_a"], "gf": r["team_a_score"], "ga": r["team_h_score"]})
-        g = pd.DataFrame(rows).groupby("team_id", as_index=False).agg(n=("gf", "count"), gf=("gf", "sum"), ga=("ga", "sum"))
+            rows.append(
+                {
+                    "team_id": r["team_h"],
+                    "is_home": 1,
+                    "gf": r["team_h_score"],
+                    "ga": r["team_a_score"],
+                }
+            )
+            rows.append(
+                {
+                    "team_id": r["team_a"],
+                    "is_home": 0,
+                    "gf": r["team_a_score"],
+                    "ga": r["team_h_score"],
+                }
+            )
+        raw = pd.DataFrame(rows)
+        g = raw.groupby("team_id", as_index=False).agg(n=("gf", "count"), gf=("gf", "sum"), ga=("ga", "sum"))
         g["prior_attack"] = g["gf"] / g["n"].clip(lower=1)
         g["prior_defence"] = -(g["ga"] / g["n"].clip(lower=1))
         g = g.merge(prev_teams[["team_id", "tkey"]], on="team_id")
         by_key = g.set_index("tkey")[["prior_attack", "prior_defence"]]
+        vg = raw.groupby(["team_id", "is_home"], as_index=False).agg(
+            n=("gf", "count"), gf=("gf", "sum"), ga=("ga", "sum")
+        )
+        vg["prior_attack"] = vg["gf"] / vg["n"].clip(lower=1)
+        vg["prior_defence"] = -(vg["ga"] / vg["n"].clip(lower=1))
+        vg = vg.merge(prev_teams[["team_id", "tkey"]], on="team_id")
+        by_key = _attach_venue_priors(by_key, vg.set_index(["tkey", "is_home"]))
     else:
-        g = ut.groupby("team_key", as_index=True).agg(n=("xg_for", "count"), xgf=("xg_for", "sum"), xga=("xg_against", "sum"))
+        ut = ut.copy()
+        ut["is_home"] = pd.to_numeric(ut["is_home"], errors="coerce").fillna(0).astype(int)
+        g = ut.groupby("team_key", as_index=True).agg(
+            n=("xg_for", "count"), xgf=("xg_for", "sum"), xga=("xg_against", "sum")
+        )
         g["n"] = g["n"].clip(lower=1)
         by_key = pd.DataFrame(
             {
@@ -98,15 +130,60 @@ def load_team_priors(
             },
             index=g.index,
         )
+        vg = ut.groupby(["team_key", "is_home"], as_index=True).agg(
+            n=("xg_for", "count"), xgf=("xg_for", "sum"), xga=("xg_against", "sum")
+        )
+        vg["n"] = vg["n"].clip(lower=1)
+        vg["prior_attack"] = vg["xgf"] / vg["n"]
+        vg["prior_defence"] = -(vg["xga"] / vg["n"])
+        by_key = _attach_venue_priors(by_key, vg)
 
     promo_att, promo_de = promoted_strength_anchor(by_key, promoted_quantile)
+    promo_venue = {
+        col: float(by_key[col].quantile(promoted_quantile))
+        if col in by_key.columns and by_key[col].notna().any()
+        else (promo_att if "attack" in col else promo_de)
+        for col in venue_cols
+    }
 
+    tkey = curr.set_index("team_id")["tkey"]
     out = curr.set_index("team_id")[[]]
-    out["prior_attack"] = curr.set_index("team_id")["tkey"].map(by_key["prior_attack"])
-    out["prior_defence"] = curr.set_index("team_id")["tkey"].map(by_key["prior_defence"])
+    out["prior_attack"] = tkey.map(by_key["prior_attack"])
+    out["prior_defence"] = tkey.map(by_key["prior_defence"])
+    for col in venue_cols:
+        if col in by_key.columns:
+            out[col] = tkey.map(by_key[col])
+        else:
+            out[col] = np.nan
     out["is_promoted"] = out["prior_attack"].isna().astype(int)
     out["prior_attack"] = out["prior_attack"].fillna(promo_att)
     out["prior_defence"] = out["prior_defence"].fillna(promo_de)
+    for col in venue_cols:
+        out[col] = out[col].fillna(promo_venue[col])
+        overall = out["prior_attack"] if "attack" in col else out["prior_defence"]
+        out[col] = out[col].fillna(overall)
+    return out
+
+
+def _attach_venue_priors(by_key: pd.DataFrame, vg: pd.DataFrame) -> pd.DataFrame:
+    """Add last-season home/away xG columns onto a team-key prior table."""
+    out = by_key.copy()
+    if vg.empty:
+        return out
+    idx = vg.index
+    if not isinstance(idx, pd.MultiIndex) or idx.nlevels < 2:
+        return out
+
+    def _col(is_home: int, src: str) -> pd.Series:
+        try:
+            return vg.xs(int(is_home), level=-1)[src]
+        except (KeyError, TypeError, ValueError):
+            return pd.Series(dtype=float)
+
+    out["prior_attack_home"] = _col(1, "prior_attack")
+    out["prior_attack_away"] = _col(0, "prior_attack")
+    out["prior_defence_home"] = _col(1, "prior_defence")
+    out["prior_defence_away"] = _col(0, "prior_defence")
     return out
 
 

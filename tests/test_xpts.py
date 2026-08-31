@@ -13,7 +13,7 @@ def _fx(n_matches: int, leak=1.2, att=1.2, start_gw=2, p_cs=0.3, home=1.0):
     by = {}
     for i in range(n_matches):
         by[str(start_gw + i)] = [
-            {"home": home, "opp_defence_leak": leak, "opp_attack": att, "p_cs": p_cs, "own_xga": 1.2}
+            {"home": home, "opp_defence_leak": leak, "opp_attack": att, "p_cs": p_cs, "own_xga": 1.2, "own_xg": 1.2}
         ]
     return json.dumps(by)
 
@@ -236,3 +236,28 @@ def test_model_xi_beats_template_when_xpts_are_true():
     pack = evaluate_window(scored, actual, polish=False)
     assert pack["model_ok"] and pack["template_ok"]
     assert pack["delta"] > 0
+
+
+def test_mid_creator_xpts_beats_defcon_merchant():
+    settings = load_settings()
+    weights = load_weights()
+    fx = _fx(5)
+    df = pd.DataFrame(
+        {
+            "position": ["MID", "MID"],
+            "start_pct": [1.0, 1.0],
+            "start_pct_l5": [1.0, 1.0],
+            "minutes_pct": [0.95, 0.95],
+            "availability": [1.0, 1.0],
+            "matches": [10, 10],
+            "npxg90": [0.42, 0.08],
+            "npxa90": [0.32, 0.08],
+            "npxgi90_l5": [0.74, 0.16],
+            "p_clean_sheet": [0.2, 0.2],
+            "defcon_hit_rate": [0.15, 0.90],
+            "saves90": [0.0, 0.0],
+            "fixtures_json": [fx, fx],
+        }
+    )
+    xp = compute_xpts(df, weights, settings)
+    assert float(xp.iloc[0]) > float(xp.iloc[1])

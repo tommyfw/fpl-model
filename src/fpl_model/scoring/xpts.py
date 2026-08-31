@@ -18,16 +18,17 @@ def _num(df: pd.DataFrame, name: str, default: float = 0.0) -> pd.Series:
     return pd.to_numeric(df[name], errors="coerce").fillna(default)
 
 
-def _horizon_matches(fixtures_json: Any, horizon: int) -> tuple[float, float, float, float]:
-    """Count fixtures in the window; mean opponent leak/attack; sum of per-match P(CS)."""
+def _horizon_matches(fixtures_json: Any, horizon: int) -> tuple[float, float, float, float, float]:
+    """Count fixtures; mean opponent leak/attack; sum P(CS); mean own xG."""
     matches = iter_horizon_matches(fixtures_json, horizon)
     if not matches:
-        return 0.0, 1.2, 1.2, 0.0
+        return 0.0, 1.2, 1.2, 0.0, 1.2
     leaks = [float(m.get("opp_defence_leak") or 1.2) for m in matches]
     atts = [float(m.get("opp_attack") or 1.2) for m in matches]
     pcs = [float(m.get("p_cs") if m.get("p_cs") is not None else 0.22) for m in matches]
+    owns = [float(m.get("own_xg") or 1.2) for m in matches]
     n = float(len(matches))
-    return n, float(np.mean(leaks)), float(np.mean(atts)), float(np.sum(pcs))
+    return n, float(np.mean(leaks)), float(np.mean(atts)), float(np.sum(pcs)), float(np.mean(owns))
 
 
 def compute_xpts(df: pd.DataFrame, weights: dict[str, Any], settings: Settings) -> pd.Series:
@@ -44,6 +45,7 @@ def compute_xpts(df: pd.DataFrame, weights: dict[str, Any], settings: Settings) 
     fx_hi = float(cfg.get("fixture_hi", 1.22))
     assist_pts = float(cfg.get("assist", 3.0))
     defcon_pts = float(cfg.get("defcon", 2.0))
+    defcon_mid = float(cfg.get("defcon_mid", defcon_pts))
     save_div = float(cfg.get("save_per_pt", 3.0))
     cs_scale = float(cfg.get("cs_scale", 0.65))
     p90_res = float(cfg.get("p90_residual", 0.10))
@@ -115,7 +117,8 @@ def compute_xpts(df: pd.DataFrame, weights: dict[str, Any], settings: Settings) 
     n_fx = pd.Series([b[0] for b in bits], index=df.index)
     leak = pd.Series([b[1] for b in bits], index=df.index)
     sum_pcs = pd.Series([b[3] for b in bits], index=df.index)
-    atk_fx = (leak / 1.2).clip(fx_lo, fx_hi)
+    own_xg = pd.Series([b[4] for b in bits], index=df.index)
+    atk_fx = ((leak / 1.2) * (own_xg / 1.2).clip(0.85, 1.18) ** 0.4).clip(fx_lo, fx_hi)
 
     npxg = _num(df, "npxg90").clip(lower=0)
     npxa = _num(df, "npxa90").clip(lower=0)
@@ -145,7 +148,7 @@ def compute_xpts(df: pd.DataFrame, weights: dict[str, Any], settings: Settings) 
     cs_horizon = cs_horizon * rest
 
     defcon = _num(df, "defcon_hit_rate").clip(0, 1)
-    defcon_xp = np.where(pos.eq("MID"), defcon_pts * defcon, 0.0) + np.where(
+    defcon_xp = np.where(pos.eq("MID"), defcon_mid * defcon, 0.0) + np.where(
         pos.eq("DEF"), defcon_def * defcon * (1.08 - 0.20 * fb), 0.0
     )
 

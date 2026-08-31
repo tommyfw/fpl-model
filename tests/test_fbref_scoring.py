@@ -65,6 +65,7 @@ def test_fbref_leaves_change_underlying():
     weights = load_weights()
     assert "fbref_shots90" in weights["underlying"]["MID"]
     assert abs(sum(weights["underlying"]["MID"].values()) - 1.0) < 1e-9
+    assert weights["underlying"]["MID"]["npxa90"] > weights["underlying"]["MID"]["defcon_hit_rate"]
     no_fb = score_feature_frame(_minimal_feats(False), weights, settings)
     with_fb = score_feature_frame(_minimal_feats(True), weights, settings)
     # Top shot volume player should gain U when FBref is present

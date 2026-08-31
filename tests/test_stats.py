@@ -110,6 +110,9 @@ def test_mid_overall_moves_with_fixtures():
     assert weights["overall_by_pos"]["MID"]["O"] > 0
     for pos in ("DEF", "MID", "FWD", "GK"):
         assert weights["overall_by_pos"][pos]["O"] > 0
+    assert weights["overall_by_pos"]["MID"]["M"] > weights["overall_by_pos"]["DEF"]["M"]
+    assert weights["overall_by_pos"]["DEF"]["O"] > weights["overall_by_pos"]["MID"]["O"]
+    assert weights["overall_by_pos"]["FWD"]["Q"] > weights["overall_by_pos"]["MID"]["Q"]
 
     def fx(leak: float, att: float, n: int = 5) -> str:
         by = {str(2 + i): [{"home": 1.0, "opp_defence_leak": leak, "opp_attack": att, "p_cs": 0.3}] for i in range(n)}

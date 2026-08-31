@@ -1,7 +1,7 @@
 import pandas as pd
 
 from fpl_model.config import load_settings
-from fpl_model.features.asof import _blend_team_strength
+from fpl_model.features.asof import _blend_team_strength, _venue_strength
 from fpl_model.ingest.priors import load_team_priors, previous_season, promoted_strength_anchor
 
 
@@ -49,6 +49,53 @@ def test_blend_pulls_single_match_toward_prior(monkeypatch):
     assert bde.loc[11] > -1.4  # still moved a little from the one clean sheet
 
 
+def test_venue_uses_last_season_when_no_games_this_year():
+    season_atk = pd.Series({1: 1.5, 2: 1.4})
+    season_de = pd.Series({1: -1.2, 2: -1.3})
+    priors = pd.DataFrame(
+        {
+            "prior_attack_home": [1.8, 1.1],
+            "prior_attack_away": [1.1, 0.9],
+            "prior_defence_home": [-1.0, -1.5],
+            "prior_defence_away": [-1.6, -1.9],
+        },
+        index=pd.Index([1, 2], name="team_id"),
+    )
+    ah, aa, dh, da = _venue_strength(pd.DataFrame(), season_atk, season_de, 4, priors)
+    assert abs(float(ah.loc[1]) - 1.8) < 1e-9
+    assert abs(float(aa.loc[1]) - 1.1) < 1e-9
+    assert abs(float(dh.loc[2]) - -1.5) < 1e-9
+    assert abs(float(da.loc[2]) - -1.9) < 1e-9
+
+
+def test_one_home_game_shrinks_toward_venue_prior():
+    ut = pd.DataFrame(
+        {
+            "team_id": [1],
+            "is_home": [1],
+            "match_id": [99],
+            "xg_for": [3.0],
+            "xg_against": [0.2],
+        }
+    )
+    season_atk = pd.Series({1: 1.5})
+    season_de = pd.Series({1: -1.2})
+    priors = pd.DataFrame(
+        {
+            "prior_attack_home": [1.8],
+            "prior_attack_away": [1.1],
+            "prior_defence_home": [-1.0],
+            "prior_defence_away": [-1.6],
+        },
+        index=pd.Index([1], name="team_id"),
+    )
+    ah, aa, dh, da = _venue_strength(ut, season_atk, season_de, 4, priors)
+    # n=1, prior_n=4 → 0.2 observed + 0.8 prior
+    assert abs(float(ah.loc[1]) - (0.2 * 3.0 + 0.8 * 1.8)) < 1e-9
+    assert abs(float(dh.loc[1]) - (0.2 * -0.2 + 0.8 * -1.0)) < 1e-9
+    assert abs(float(aa.loc[1]) - 1.1) < 1e-9
+
+
 def test_load_team_priors_marks_promoted_when_db_present():
     from fpl_model.db import connect
 
@@ -63,3 +110,11 @@ def test_load_team_priors_marks_promoted_when_db_present():
     # Hull / Coventry / Ipswich should exist; at least one promoted flag if 25/26 loaded
     assert priors["prior_attack"].notna().all()
     assert priors["prior_defence"].notna().all()
+    for col in (
+        "prior_attack_home",
+        "prior_attack_away",
+        "prior_defence_home",
+        "prior_defence_away",
+    ):
+        assert col in priors.columns
+        assert priors[col].notna().all()

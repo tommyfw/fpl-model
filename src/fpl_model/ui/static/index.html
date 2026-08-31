@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FPL player cards</title>
-    <link rel="stylesheet" href="/app.css" />
+    <link rel="stylesheet" href="/app.css?v=fx5" />
   </head>
   <body>
     <header class="top">
@@ -29,9 +29,9 @@
       <div class="filters row-filters">
         <input id="search" type="search" placeholder="Search player" autocomplete="off" />
         <select id="sort" aria-label="Sort">
+          <option value="xpts" selected>xPts</option>
           <option value="overall">Overall</option>
           <option value="upside">Upside</option>
-          <option value="xpts">xPts</option>
           <option value="value">Value</option>
           <option value="quality">Quality</option>
           <option value="minutes">Minutes</option>
@@ -143,7 +143,7 @@
 
     <section id="view-fixtures" class="view hidden">
       <div class="xi-controls">
-        <span class="xi-summary">Attack ease uses team xG shrunk toward last season (promoted → PL average). Sorted by mean Fixtures (O).</span>
+        <span class="xi-summary">Same fixture pack as the scorer. Chip colour = opponent leak × your attack (fixed PL bands). Sorted by mean Fixtures (O).</span>
       </div>
       <main class="xi-main">
         <section class="list-pane xi-board" id="fixture-board">
@@ -152,6 +152,6 @@
       </main>
     </section>
 
-    <script src="/app.js?v=lineup2"></script>
+    <script src="/app.js?v=fx5"></script>
   </body>
 </html>

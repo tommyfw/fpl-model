@@ -112,11 +112,14 @@ def _fixture_score(fixtures_json: str, position: str, weights: dict, horizon: in
             att = m.get("opp_attack", 1.2)
             home = m.get("home", 0.5)
             pcs = m.get("p_cs", 0.25)
+            ctx = m.get("team_xg_context")
+            if ctx is None:
+                ctx = 50.0
             s = (
                 pos_w["opp_defence"] * min(100.0, leak / 2.0 * 100)
                 + pos_w["opp_attack"] * (100.0 - min(100.0, att / 2.0 * 100))
                 + pos_w["home_away"] * (70.0 if home else 40.0)
-                + pos_w["team_xg_context"] * 50.0
+                + pos_w["team_xg_context"] * float(np.clip(ctx, 5.0, 100.0))
                 + pos_w["p_cs"] * min(100.0, pcs * 200)
             )
             piece += s
@@ -295,6 +298,10 @@ def score_feature_frame(feats: pd.DataFrame, weights: dict[str, Any], settings: 
         if "rest_factor" in df.columns:
             df.loc[idx, "M"] = (df.loc[idx, "M"] * df.loc[idx, "rest_factor"].fillna(1.0).clip(0.82, 1.0)).clip(0, 100)
         _apply_minutes_reliability(df, idx, pos, settings)
+        # News / FPL chance is a hard minutes cap, not a 15% leaf.
+        if "availability" in df.columns:
+            avail = pd.to_numeric(df.loc[idx, "availability"], errors="coerce").fillna(1.0).clip(0.0, 1.0)
+            df.loc[idx, "M"] = (df.loc[idx, "M"] * (0.18 + 0.82 * avail)).clip(0, 100)
 
     # Fixtures
     df["O"] = [

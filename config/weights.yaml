@@ -1,80 +1,79 @@
 # All parent weights sum to 1. Leaf weights sum to 1 within each block.
 
-# Default mix when a position has no overall_by_pos entry.
+# Lab more_m + more_f (parent). overall_by_pos is not a copy of that mix:
+# MID more minutes / less fixtures; DEF/FWD/GK keep more O for CS and runs.
 overall:
-  Q: 0.40
-  M: 0.40
-  O: 0.14
-  V: 0.06
+  Q: 0.3024
+  M: 0.5800
+  O: 0.0840
+  V: 0.0336
 
-# Minutes are the strongest rank signal in both 2024-25 and 2025-26.
-# Keep O > 0 so blanks/DGWs still move the card; MID less than DEF/FWD/GK.
 overall_by_pos:
   DEF:
-    Q: 0.36
-    M: 0.46
-    O: 0.12
-    V: 0.06
-  MID:
-    Q: 0.36
-    M: 0.50
-    O: 0.08
-    V: 0.06
-  FWD:
-    Q: 0.38
-    M: 0.46
+    Q: 0.30
+    M: 0.54
     O: 0.12
     V: 0.04
+  MID:
+    Q: 0.30
+    M: 0.62
+    O: 0.05
+    V: 0.03
+  FWD:
+    Q: 0.34
+    M: 0.54
+    O: 0.10
+    V: 0.02
   GK:
-    Q: 0.36
-    M: 0.50
+    Q: 0.30
+    M: 0.56
     O: 0.10
     V: 0.04
 
 quality:
-  U: 0.50
-  F: 0.22
-  R: 0.18
-  T: 0.10
+  U: 0.3974
+  F: 0.3800
+  R: 0.1430
+  T: 0.0796
 
 quality_by_pos:
   MID:
-    U: 0.38
-    F: 0.26
-    R: 0.24
-    T: 0.12
+    U: 0.36
+    F: 0.36
+    R: 0.19
+    T: 0.09
   DEF:
-    U: 0.42
-    F: 0.26
-    R: 0.24
-    T: 0.08
+    U: 0.3292
+    F: 0.4200
+    R: 0.1881
+    T: 0.0627
   FWD:
-    U: 0.50
-    F: 0.26
-    R: 0.18
-    T: 0.06
+    U: 0.3919
+    F: 0.4200
+    R: 0.1410
+    T: 0.0471
   GK:
-    U: 0.50
-    F: 0.26
-    R: 0.18
-    T: 0.06
+    U: 0.3919
+    F: 0.4200
+    R: 0.1410
+    T: 0.0471
 
 underlying:
   MID:
-    npxgi90: 0.12
-    npxgi90_l5: 0.10
+    npxgi90: 0.14
+    npxgi90_l5: 0.11
     npxg90: 0.07
-    npxa90: 0.10
+    npxa90: 0.12
     shots_in_box90: 0.07
     fbref_shots90: 0.04
-    key_passes90: 0.10
-    defcon_hit_rate: 0.08
-    fbref_cbit90: 0.04
+    key_passes90: 0.12
+    defcon_hit_rate: 0.05
+    fbref_cbit90: 0.02
     xgchain90: 0.05
-    xgbuildup90: 0.04
+    xgbuildup90: 0.02
     chance_quality90: 0.10
-    open_npxg90: 0.05
-    sp_xg90: 0.04
+    open_npxg90: 0.06
+    sp_xg90: 0.03
   MID_DM:
     npxgi90: 0.10
     npxgi90_l5: 0.06
@@ -169,31 +168,32 @@ form:
 
 fixtures:
   # Mild front-weight: a transfer is a 5-GW hold, not a one-week punt.
+  # home_away is residual only; leak / team xG / P(CS) already use venue rates.
   horizon: [0.28, 0.22, 0.18, 0.16, 0.16]
   FWD:
-    opp_defence: 0.55
+    opp_defence: 0.62
     opp_attack: 0.05
-    home_away: 0.15
-    team_xg_context: 0.20
+    home_away: 0.05
+    team_xg_context: 0.23
     p_cs: 0.05
   MID:
-    opp_defence: 0.40
+    opp_defence: 0.47
     opp_attack: 0.15
-    home_away: 0.15
+    home_away: 0.05
     team_xg_context: 0.20
-    p_cs: 0.10
+    p_cs: 0.13
   DEF:
     opp_defence: 0.15
-    opp_attack: 0.40
-    home_away: 0.15
+    opp_attack: 0.45
+    home_away: 0.05
     team_xg_context: 0.10
-    p_cs: 0.20
+    p_cs: 0.25
   GK:
     opp_defence: 0.15
-    opp_attack: 0.40
-    home_away: 0.15
+    opp_attack: 0.45
+    home_away: 0.05
     team_xg_context: 0.10
-    p_cs: 0.20
+    p_cs: 0.25
 
 value:
   xpts_per_m: 0.50
@@ -213,13 +213,14 @@ upside:
 xpts:
   start_l5: 0.55
   recency: 0.45
-  fixture_lo: 0.85
-  fixture_hi: 1.22
+  fixture_lo: 0.94
+  fixture_hi: 1.08
   assist: 3.0
   defcon: 2.0
+  defcon_mid: 1.35
   save_per_pt: 3.0
   # Poisson P(CS) overstates FPL CS (60+ mins, late goals). Attack stays unscaled.
-  cs_scale: 0.65
+  cs_scale: 0.50
   defcon_def: 1.5
   fwd_attack_scale: 1.10
   p90_residual: 0.10

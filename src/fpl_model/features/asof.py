@@ -12,7 +12,8 @@ from fpl_model.db import connect
 from fpl_model.features.rotation import competing_start_rates
 from fpl_model.features.stats import blend_playing_time, per90, shrink_to_mean
 from fpl_model.ingest.priors import load_player_priors, load_team_priors
-from fpl_model.scoring.clean_sheet import horizon_p_cs, pack_fixture
+from fpl_model.scoring.availability import availability_from_news
+from fpl_model.scoring.clean_sheet import horizon_p_cs, pack_match_for_team
 from fpl_model.scoring.role import (
     def_fb_share,
     defcon_count,
@@ -206,10 +207,16 @@ def _apply_understat(
                 out["team_attack_trend"] = out["team_id"].map(tmap_a).fillna(0.0)
                 out["team_defence_trend"] = out["team_id"].map(tmap_d).fillna(0.0)
         # Always blend with prior-season xG (promoted sides → bottom-quartile PL).
-        atk, de = _blend_team_strength(conn, season, atk, de, n_obs, settings)
+        q = float(getattr(settings, "promoted_prior_quantile", 0.25))
+        priors = load_team_priors(conn, season, promoted_quantile=q)
+        atk, de = _blend_team_strength(conn, season, atk, de, n_obs, settings, priors=priors)
         min_venue = int(getattr(settings, "venue_prior_matches", 4))
         atk_h, atk_a, de_h, de_a = _venue_strength(
-            ut if not ut.empty else pd.DataFrame(), atk, de, min_venue
+            ut if not ut.empty else pd.DataFrame(),
+            atk,
+            de,
+            min_venue,
+            priors=priors,
         )
         out["team_attack"] = out["team_id"].map(atk).fillna(out.get("team_attack"))
         out["team_defence"] = out["team_id"].map(de).fillna(out.get("team_defence"))
@@ -282,43 +289,81 @@ def _venue_strength(
     season_atk: pd.Series,
     season_de: pd.Series,
     min_n: int,
+    priors: pd.DataFrame | None = None,
 ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
-    """Home/away xG for and −xGA. Falls back to season rates until min_n venue games."""
-    empty = season_atk.copy()
-    if ut.empty or "is_home" not in ut.columns or "team_id" not in ut.columns:
-        return season_atk, season_atk, season_de, season_de
-    g = (
-        ut.dropna(subset=["team_id"])
-        .groupby(["team_id", "is_home"], as_index=True)
-        .agg(n=("match_id", "nunique"), xgf=("xg_for", "sum"), xga=("xg_against", "sum"))
-    )
-    if g.empty:
-        return season_atk, season_atk, season_de, season_de
-    g["n"] = g["n"].clip(lower=1)
-    atk = g["xgf"] / g["n"]
-    de = -(g["xga"] / g["n"])
-    ids = season_atk.index.union(season_de.index)
+    """Home/away xG for and −xGA, shrunk toward last-season venue rates.
 
-    def _blend(is_home: int, season: pd.Series, venue: pd.Series) -> pd.Series:
+    Until a club has many home (or away) games this year, last season's
+    home/away xG is the prior (promoted clubs use last year's PL quantile).
+    """
+    prior_n = max(int(min_n), 1)
+    ids = season_atk.index.union(season_de.index)
+    if priors is not None and not priors.empty:
+        ids = ids.union(priors.index)
+    g = pd.DataFrame()
+    atk = pd.Series(dtype=float)
+    de = pd.Series(dtype=float)
+    if not ut.empty and "is_home" in ut.columns and "team_id" in ut.columns:
+        u = ut.dropna(subset=["team_id"]).copy()
+        u["team_id"] = pd.to_numeric(u["team_id"], errors="coerce")
+        u = u.dropna(subset=["team_id"])
+        u["team_id"] = u["team_id"].astype(int)
+        u["is_home"] = pd.to_numeric(u["is_home"], errors="coerce").fillna(0).astype(int)
+        n_col = "match_id" if "match_id" in u.columns else "xg_for"
+        g = u.groupby(["team_id", "is_home"], as_index=True).agg(
+            n=(n_col, "nunique" if n_col == "match_id" else "count"),
+            xgf=("xg_for", "sum"),
+            xga=("xg_against", "sum"),
+        )
+        if not g.empty:
+            g["n"] = g["n"].clip(lower=1)
+            atk = g["xgf"] / g["n"]
+            de = -(g["xga"] / g["n"])
+
+    def _prior(tid, col: str, season: pd.Series) -> float:
+        if priors is not None and not priors.empty and tid in priors.index and col in priors.columns:
+            v = priors.loc[tid, col]
+            if pd.notna(v):
+                return float(v)
+        if tid in season.index:
+            v = season.loc[tid]
+            if pd.notna(v):
+                return float(v)
+        return float("nan")
+
+    def _obs_n(tid, is_home: int) -> float:
+        if g.empty:
+            return 0.0
+        try:
+            if (tid, is_home) in g.index:
+                return float(g.loc[(tid, is_home), "n"])
+        except (KeyError, TypeError):
+            return 0.0
+        return 0.0
+
+    def _blend(is_home: int, season: pd.Series, venue: pd.Series, prior_col: str) -> pd.Series:
         out = season.reindex(ids)
         for tid in ids:
-            try:
-                n = float(g.loc[(tid, is_home), "n"]) if (tid, is_home) in g.index else 0.0
-            except (KeyError, TypeError):
-                n = 0.0
-            if n >= min_n:
+            n = _obs_n(tid, is_home)
+            prior = _prior(tid, prior_col, season)
+            obs = float("nan")
+            if n > 0:
                 try:
-                    v = float(venue.loc[(tid, is_home)])
+                    obs = float(venue.loc[(tid, is_home)])
                 except (KeyError, TypeError):
-                    continue
-                s = float(season.reindex([tid]).iloc[0]) if tid in season.index else v
-                out.loc[tid] = 0.55 * v + 0.45 * s
+                    obs = float("nan")
+            if np.isfinite(obs) and n > 0:
+                base = prior if np.isfinite(prior) else (float(season.loc[tid]) if tid in season.index else obs)
+                w = n / (n + prior_n)
+                out.loc[tid] = w * obs + (1.0 - w) * base
+            elif np.isfinite(prior):
+                out.loc[tid] = prior
         return out
 
-    atk_h = _blend(1, season_atk, atk)
-    atk_a = _blend(0, season_atk, atk)
-    de_h = _blend(1, season_de, de)
-    de_a = _blend(0, season_de, de)
+    atk_h = _blend(1, season_atk, atk, "prior_attack_home")
+    atk_a = _blend(0, season_atk, atk, "prior_attack_away")
+    de_h = _blend(1, season_de, de, "prior_defence_home")
+    de_a = _blend(0, season_de, de, "prior_defence_away")
     return atk_h, atk_a, de_h, de_a
 
 
@@ -399,11 +444,13 @@ def _blend_team_strength(
     de: pd.Series,
     n: pd.Series,
     settings: Settings,
+    priors: pd.DataFrame | None = None,
 ) -> tuple[pd.Series, pd.Series]:
     """Shrink observed team xG rates toward prior-season (promoted → bottom-quartile PL)."""
-    q = float(getattr(settings, "promoted_prior_quantile", 0.25))
-    priors = load_team_priors(conn, season, promoted_quantile=q)
-    if priors.empty:
+    if priors is None:
+        q = float(getattr(settings, "promoted_prior_quantile", 0.25))
+        priors = load_team_priors(conn, season, promoted_quantile=q)
+    if priors is None or priors.empty:
         return atk, de
     prior_n = max(int(getattr(settings, "team_prior_matches", 8)), 1)
     ids = priors.index.union(atk.index).union(de.index)
@@ -481,16 +528,24 @@ def build_features_for_asof(
         return pd.DataFrame()
 
     pcols = [
-        "fpl_id",
-        "position",
-        "team_id",
-        "web_name",
-        "status",
-        "chance_of_playing_next",
-        "penalties_order",
-        "corners_order",
-        "direct_fk_order",
+        c
+        for c in [
+            "fpl_id",
+            "position",
+            "team_id",
+            "web_name",
+            "status",
+            "chance_of_playing_next",
+            "chance_of_playing_this",
+            "news",
+            "penalties_order",
+            "corners_order",
+            "direct_fk_order",
+        ]
+        if c in players.columns
     ]
+    if "fpl_id" not in pcols:
+        pcols = ["fpl_id"] + pcols
     for extra in ("code", "now_cost", "selected_by_percent"):
         if extra in players.columns:
             pcols.append(extra)
@@ -543,8 +598,20 @@ def build_features_for_asof(
         last10_starts = _window_sum(past, 10, "starts")
         meta = players.set_index("fpl_id")
         out = past_n.set_index("fpl_id")
-        for c in ["position", "team_id", "web_name", "status", "chance_of_playing_next", "penalties_order", "corners_order", "direct_fk_order"]:
-            out[c] = meta[c]
+        for c in [
+            "position",
+            "team_id",
+            "web_name",
+            "status",
+            "chance_of_playing_next",
+            "chance_of_playing_this",
+            "news",
+            "penalties_order",
+            "corners_order",
+            "direct_fk_order",
+        ]:
+            if c in meta.columns:
+                out[c] = meta[c]
     else:
         out = players.set_index("fpl_id").copy()
         for c in [
@@ -756,11 +823,20 @@ def build_features_for_asof(
     out["price"] = out["last_value"] / 10.0
     price_delta = _price_change(past_sorted)
     out["price_change"] = price_delta.reindex(out.index).fillna(0.0)
-    out["availability"] = np.where(
-        out["status"].isin(["i", "s", "u", "n"]),
-        0.1,
-        np.where(out["status"] == "d", out["chance_of_playing_next"].fillna(50) / 100.0, 1.0),
-    )
+    out["availability"] = [
+        availability_from_news(
+            st,
+            chance_this=ct,
+            chance_next=cn,
+            news=nw,
+        )
+        for st, ct, cn, nw in zip(
+            out["status"] if "status" in out.columns else [None] * len(out),
+            out["chance_of_playing_this"] if "chance_of_playing_this" in out.columns else [None] * len(out),
+            out["chance_of_playing_next"] if "chance_of_playing_next" in out.columns else [None] * len(out),
+            out["news"] if "news" in out.columns else [None] * len(out),
+        )
+    ]
     out["pen_taker"] = (out["penalties_order"] == 1).astype(float)
     out["set_piece_taker"] = (
         (out["corners_order"].fillna(99) <= 2) | (out["direct_fk_order"].fillna(99) <= 2)
@@ -802,9 +878,19 @@ def build_features_for_asof(
     ):
         if c not in out.columns:
             out[c] = out.get(src)
-    team_lookup = out.groupby("team_id")[
-        ["team_attack", "team_defence", "team_attack_home", "team_attack_away", "team_defence_home", "team_defence_away"]
-    ].first()
+    team_cols = [
+        "team_attack",
+        "team_defence",
+        "team_attack_home",
+        "team_attack_away",
+        "team_defence_home",
+        "team_defence_away",
+    ]
+    if "team_tilt" in out.columns:
+        team_cols.append("team_tilt")
+    team_lookup = out.groupby("team_id")[team_cols].first()
+    team_lookup = team_lookup[pd.notna(team_lookup.index)].copy()
+    team_lookup.index = team_lookup.index.astype(int)
     atk_mean = team_lookup["team_attack"].dropna()
     league_xg = float(atk_mean.mean()) if len(atk_mean) else 1.35
     if not np.isfinite(league_xg) or league_xg <= 0.4:
@@ -819,22 +905,15 @@ def build_features_for_asof(
         for _, fr in fxs.iterrows():
             home = bool(fr["team_h"] == team)
             opp = fr["team_a"] if home else fr["team_h"]
-            own_def = (team_lookup["team_defence_home"] if home else team_lookup["team_defence_away"]).get(team, np.nan)
-            own_xga = float(-own_def) if pd.notna(own_def) else league_xg
-            opp_att = (team_lookup["team_attack_away"] if home else team_lookup["team_attack_home"]).get(opp, league_xg)
-            opp_def_score = (team_lookup["team_defence_away"] if home else team_lookup["team_defence_home"]).get(
-                opp, -league_xg
-            )
-            leak = float(-opp_def_score) if pd.notna(opp_def_score) else league_xg
-            att = float(opp_att) if pd.notna(opp_att) else league_xg
             ev = int(fr["event"]) if pd.notna(fr["event"]) else as_of_gw
             by_event.setdefault(ev, []).append(
-                pack_fixture(
+                pack_match_for_team(
                     home=home,
-                    opp_attack=att,
-                    opp_defence_leak=leak,
-                    own_xga=own_xga,
+                    team_id=team,
+                    opp_id=opp,
+                    lookup=team_lookup,
                     league_xg=league_xg,
+                    position=str(row.get("position") or "MID"),
                 )
             )
         fx_json = json.dumps({str(k): v for k, v in by_event.items()})

@@ -155,6 +155,7 @@ def load_season(season: str, settings: Settings | None = None, skip_understat: b
             "status": players.get("status"),
             "chance_of_playing_this": pd.to_numeric(players.get("chance_of_playing_this_round"), errors="coerce"),
             "chance_of_playing_next": pd.to_numeric(players.get("chance_of_playing_next_round"), errors="coerce"),
+            "news": players["news"] if "news" in players.columns else pd.Series([pd.NA] * len(players)),
             "penalties_order": pd.to_numeric(players.get("penalties_order"), errors="coerce"),
             "corners_order": pd.to_numeric(players.get("corners_and_indirect_freekicks_order"), errors="coerce"),
             "direct_fk_order": pd.to_numeric(players.get("direct_freekicks_order"), errors="coerce"),

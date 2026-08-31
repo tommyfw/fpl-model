@@ -4,7 +4,7 @@ const state = {
   asOf: null,
   position: "",
   action: "",
-  sort: "overall",
+  sort: "xpts",
   selected: null,
   tab: "players",
   shortlist: new Set(),
@@ -180,13 +180,13 @@ async function renderShortlist() {
     return;
   }
   $("short-empty").classList.add("hidden");
-  const all = await fetchPlayers({ sort: "overall" });
+  const all = await fetchPlayers({ sort: "xpts" });
   const byId = new Map(all.map((p) => [p.fpl_id, p]));
   for (const id of ids.filter((x) => !byId.has(x))) {
     const p = await (await fetch(`/api/player?${new URLSearchParams({ season: state.season, as_of: String(state.asOf), id: String(id) })}`)).json();
     if (p && p.fpl_id) byId.set(p.fpl_id, p);
   }
-  const players = ids.map((id) => byId.get(id)).filter(Boolean).sort((a, b) => (b.overall || 0) - (a.overall || 0));
+  const players = ids.map((id) => byId.get(id)).filter(Boolean).sort((a, b) => (b.xpts || 0) - (a.xpts || 0));
   $("short-rows").innerHTML = players.map((p, i) => rowHtml(p, i)).join("");
 }
 
@@ -223,24 +223,33 @@ function upTone(v) {
   return "";
 }
 
-function easeClass(v, values) {
-  if (v == null || !values.length) return "mid";
-  const sorted = [...values].sort((a, b) => a - b);
-  const lo = sorted[Math.floor(sorted.length * 0.33)];
-  const hi = sorted[Math.floor(sorted.length * 0.66)];
-  if (v >= hi) return "easy";
-  if (v <= lo) return "hard";
-  return "mid";
+function fixtureTone(f, mode = "attack") {
+  if (!f || f.blank) return "blank";
+  const rating = mode === "def" ? f.def_rating ?? f.rating : f.rating;
+  const n = Number(rating);
+  if (n >= 1 && n <= 5) return `r${n}`;
+  const band = mode === "def" ? f.def_band : f.attack_band;
+  if (band === "easy") return "r2";
+  if (band === "hard") return "r4";
+  return "r3";
+}
+
+function fixtureTitle(f) {
+  return f.title || f.opp_name || f.opp || "";
 }
 
 function fixtureChips(fixtures, mode = "attack") {
   if (!fixtures || !fixtures.length) return "";
-  const key = mode === "def" ? "def_ease" : "attack_ease";
-  const vals = fixtures.filter((f) => !f.blank).map((f) => f[key]);
   return `<div class="fx-row">${fixtures
     .map((f) => {
-      const cls = f.blank ? "blank" : easeClass(f[key], vals);
-      return `<div class="fx-chip ${cls}" title="${f.opp_name || f.opp}"><span class="gw">GW${f.event}</span>${f.label}</div>`;
+      const cls = fixtureTone(f, mode);
+      const detail =
+        f.blank || f.attack_ease == null
+          ? ""
+          : mode === "def"
+            ? `<span class="gw">P(CS) ${fmt((f.p_cs || 0) * 100, 0)}%</span>`
+            : `<span class="gw">ease ${fmt(f.attack_ease, 2)}</span>`;
+      return `<div class="fx-chip ${cls}" title="${fixtureTitle(f)}"><span class="gw">GW${f.event}</span>${f.label}${detail}</div>`;
     })
     .join("")}</div>`;
 }
@@ -415,7 +424,7 @@ function saveXiAsTeam() {
 
 async function loadPlayersByIds(ids) {
   const byId = new Map();
-  const all = await fetchPlayers({ sort: "overall" });
+  const all = await fetchPlayers({ sort: "xpts" });
   all.forEach((p) => byId.set(p.fpl_id, p));
   for (const id of ids) {
     if (byId.has(id)) continue;
@@ -587,7 +596,6 @@ async function renderFixtures() {
     $("fixture-board").innerHTML = `<p class="empty">No fixtures found.</p>`;
     return;
   }
-  const allEase = teams.flatMap((t) => t.fixtures.filter((f) => !f.blank).map((f) => f.attack_ease));
   const head = events.map((e) => `<th>GW${e}</th>`).join("");
   const body = teams
     .map((t) => {
@@ -595,8 +603,8 @@ async function renderFixtures() {
         .map((e) => {
           const f = t.fixtures.find((x) => x.event === e);
           if (!f) return `<td>-</td>`;
-          const cls = f.blank ? "blank" : easeClass(f.attack_ease, allEase);
-          return `<td><span class="fx-chip ${cls}" style="display:inline-block;min-width:3.2rem">${f.label}</span></td>`;
+          const cls = fixtureTone(f, "attack");
+          return `<td><span class="fx-chip ${cls}" style="display:inline-block;min-width:3.2rem" title="${fixtureTitle(f)}">${f.label}</span></td>`;
         })
         .join("");
       return `<tr>
@@ -609,10 +617,10 @@ async function renderFixtures() {
     .join("");
   $("fixture-board").innerHTML = `
     <table class="fixture-table">
-      <thead><tr><th>Team</th><th>Avg O</th><th>Att ease</th>${head}</tr></thead>
+      <thead><tr><th>Team</th><th>Avg O</th><th>Att</th>${head}</tr></thead>
       <tbody>${body}</tbody>
     </table>
-    <p class="empty" style="padding:.8rem 0 0">Green = easier attack fixtures (leakier opponents). High Avg O = model likes the run.</p>`;
+    <p class="empty" style="padding:.8rem 0 0">Five colours match the 1–5 rating (dark green = 1 very easy … dark red = 5 very hard). Att ease = opponent leak × your team’s venue xG. Hover for details. High Avg O = model likes the run.</p>`;
 }
 
 function setTab(tab) {

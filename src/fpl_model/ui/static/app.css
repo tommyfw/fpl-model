@@ -211,6 +211,12 @@ button.ghost {
   text-align: center;
 }
 .fx-chip .gw { color: var(--muted); display: block; font-size: 0.65rem; }
+/* 1 = very easy … 5 = very hard (matches fixture rating) */
+.fx-chip.r1 { background: #0a2a1c; border-color: #1fa86a; color: #5dffb0; }
+.fx-chip.r2 { background: #163628; border-color: #2f6b54; color: var(--buy); }
+.fx-chip.r3 { background: #2a2614; border-color: #6b5a2f; color: var(--hold); }
+.fx-chip.r4 { background: #3a1c1c; border-color: #6b2f2f; color: var(--avoid); }
+.fx-chip.r5 { background: #4a1010; border-color: #c04040; color: #ff7a7a; }
 .fx-chip.easy { background: #163628; border-color: #2f6b54; color: var(--buy); }
 .fx-chip.mid { background: #2a2614; border-color: #6b5a2f; color: var(--hold); }
 .fx-chip.hard { background: #3a1c1c; border-color: #6b2f2f; color: var(--avoid); }

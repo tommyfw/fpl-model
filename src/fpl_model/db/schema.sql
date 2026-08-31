@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS dim_player (
     status TEXT,
     chance_of_playing_this REAL,
     chance_of_playing_next REAL,
+    news TEXT,
     penalties_order INTEGER,
     corners_order INTEGER,
     direct_fk_order INTEGER,

@@ -79,7 +79,7 @@ class UIHandler(SimpleHTTPRequestHandler):
             position=qs.get("position") or None,
             q=qs.get("q") or None,
             action=qs.get("action") or None,
-            sort=qs.get("sort") or "overall",
+            sort=qs.get("sort") or "xpts",
         )
         conn.close()
         return {"season": season, "as_of_gw": as_of, "players": players}
