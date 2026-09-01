@@ -9,6 +9,7 @@ import pandas as pd
 
 from fpl_model.config import Settings, load_settings
 from fpl_model.features.asof import upcoming_fixtures
+from fpl_model.scoring.availability import minutes_risk
 from fpl_model.scoring.clean_sheet import (
     ATTACK_EASE_EASY,
     ATTACK_EASE_HARD,
@@ -16,24 +17,36 @@ from fpl_model.scoring.clean_sheet import (
     PCS_EASY,
     PCS_FDR_CUTS,
     PCS_HARD,
+    VENUE_THIN_N,
     attack_fixture_ease,
     ease_band,
     fdr_from_cuts,
     pack_match_for_team,
 )
-from fpl_model.squad.transfers import suggest_transfers
+from fpl_model.squad.transfers import annotate_fixture_flags, rebuild_on_chip, suggest_transfers
 
 
 def available_snapshots(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT season, as_of_gw, COUNT(*) AS n
-        FROM score_player_asof
-        GROUP BY season, as_of_gw
-        ORDER BY season DESC, as_of_gw DESC
+        SELECT s.season, s.as_of_gw, COUNT(*) AS n,
+               COALESCE(m.is_beta, 0) AS is_beta
+        FROM score_player_asof s
+        LEFT JOIN dim_asof_snapshot m
+          ON m.season = s.season AND m.as_of_gw = s.as_of_gw
+        GROUP BY s.season, s.as_of_gw, m.is_beta
+        ORDER BY s.season DESC, s.as_of_gw DESC
         """
     ).fetchall()
-    return [{"season": r["season"], "as_of_gw": int(r["as_of_gw"]), "n": int(r["n"])} for r in rows]
+    return [
+        {
+            "season": r["season"],
+            "as_of_gw": int(r["as_of_gw"]),
+            "n": int(r["n"]),
+            "is_beta": bool(r["is_beta"]),
+        }
+        for r in rows
+    ]
 
 
 def default_snapshot(conn: sqlite3.Connection, preferred_season: str | None = None) -> dict[str, Any] | None:
@@ -47,6 +60,33 @@ def default_snapshot(conn: sqlite3.Connection, preferred_season: str | None = No
     return snaps[0]
 
 
+def list_clubs(conn: sqlite3.Connection, season: str | None = None) -> dict[str, list[dict[str, Any]]]:
+    where = ""
+    params: list[Any] = []
+    if season:
+        where = "WHERE season = ?"
+        params.append(season)
+    rows = conn.execute(
+        f"""
+        SELECT season, team_id, short_name, name
+        FROM dim_team
+        {where}
+        ORDER BY season, short_name
+        """,
+        params,
+    ).fetchall()
+    out: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        out.setdefault(r["season"], []).append(
+            {
+                "team_id": int(r["team_id"]),
+                "short_name": r["short_name"],
+                "name": r["name"],
+            }
+        )
+    return out
+
+
 def list_players(
     conn: sqlite3.Connection,
     season: str,
@@ -55,6 +95,7 @@ def list_players(
     position: str | None = None,
     q: str | None = None,
     action: str | None = None,
+    team_id: int | None = None,
     sort: str = "xpts",
     limit: int = 400,
     ids: list[int] | None = None,
@@ -78,6 +119,9 @@ def list_players(
     if action:
         where.append("s.action = ?")
         params.append(action)
+    if team_id is not None:
+        where.append("s.team_id = ?")
+        params.append(int(team_id))
     if q:
         where.append("LOWER(s.web_name) LIKE ?")
         params.append(f"%{q.lower()}%")
@@ -93,7 +137,13 @@ def list_players(
             p.status, p.selected_by_percent,
             COALESCE(f.price, p.now_cost / 10.0) AS price,
             s.overall, s.upside, s.xpts, s.action,
-            s.Q, s.U, s.F, s.R, s.T, s.M, s.O, s.V
+            s.Q, s.U, s.F, s.R, s.T, s.M, s.O, s.V,
+            json_extract(s.card_json, '$.xpts_next') AS xpts_next,
+            json_extract(s.card_json, '$.xpts_gws') AS xpts_gws,
+            json_extract(s.card_json, '$.flags') AS flags,
+            json_extract(s.card_json, '$.minutes_risk') AS minutes_risk,
+            json_extract(s.card_json, '$.availability') AS availability,
+            p.news, p.chance_of_playing_this, p.chance_of_playing_next
         FROM score_player_asof s
         LEFT JOIN dim_team t ON t.season = s.season AND t.team_id = s.team_id
         LEFT JOIN dim_player p ON p.season = s.season AND p.fpl_id = s.fpl_id
@@ -115,6 +165,7 @@ def get_player(conn: sqlite3.Connection, season: str, as_of_gw: int, fpl_id: int
             s.fpl_id, s.web_name, s.position, s.team_id, s.card_json,
             t.short_name AS team, t.name AS team_name,
             p.status, p.selected_by_percent, p.first_name, p.second_name,
+            p.news, p.chance_of_playing_this, p.chance_of_playing_next,
             p.penalties_order, p.corners_order,
             COALESCE(f.price, p.now_cost / 10.0) AS price,
             f.features_json,
@@ -145,6 +196,28 @@ def get_player(conn: sqlite3.Connection, season: str, as_of_gw: int, fpl_id: int
     out["fixtures"] = player_fixtures(
         conn, season, as_of_gw, int(row["team_id"]) if row["team_id"] is not None else None, settings
     )
+    out["news"] = row["news"] if "news" in row.keys() else None
+    out["chance_of_playing_this"] = (
+        _round(row["chance_of_playing_this"], 0) if "chance_of_playing_this" in row.keys() else None
+    )
+    out["chance_of_playing_next"] = (
+        _round(row["chance_of_playing_next"], 0) if "chance_of_playing_next" in row.keys() else None
+    )
+    if not out.get("minutes_risk"):
+        out["minutes_risk"] = minutes_risk(
+            availability=card.get("availability"),
+            status=out.get("status"),
+            news=out.get("news"),
+            chance_this=row["chance_of_playing_this"] if "chance_of_playing_this" in row.keys() else None,
+            chance_next=row["chance_of_playing_next"] if "chance_of_playing_next" in row.keys() else None,
+            position=out.get("position"),
+            minutes=feats.get("minutes"),
+            starts=feats.get("starts"),
+            appearances=feats.get("appearances"),
+            slot_security=feats.get("slot_security"),
+            pos_slot_rank=feats.get("pos_slot_rank"),
+            start_pct_l5=feats.get("start_pct_l5"),
+        )
     return out
 
 
@@ -263,6 +336,25 @@ def _team_maps(conn: sqlite3.Connection, season: str) -> tuple[dict[int, str], d
     return short, name
 
 
+def _venue_sample_n(conn: sqlite3.Connection, season: str, as_of_gw: int) -> dict[int, dict[str, int]]:
+    rows = conn.execute(
+        """
+        SELECT team_h, team_a FROM fact_fixture
+        WHERE season = ? AND event < ? AND finished = 1
+          AND team_h IS NOT NULL AND team_a IS NOT NULL
+        """,
+        (season, int(as_of_gw)),
+    ).fetchall()
+    out: dict[int, dict[str, int]] = {}
+    for r in rows:
+        h, a = int(r["team_h"]), int(r["team_a"])
+        out.setdefault(h, {"home": 0, "away": 0})
+        out.setdefault(a, {"home": 0, "away": 0})
+        out[h]["home"] += 1
+        out[a]["away"] += 1
+    return out
+
+
 def _strength_lookup(conn: sqlite3.Connection, season: str, as_of_gw: int) -> dict[int, dict[str, float]]:
     """Venue-split team xG from as-of features (same rates the scorer packed)."""
     rows = conn.execute(
@@ -281,6 +373,8 @@ def _strength_lookup(conn: sqlite3.Connection, season: str, as_of_gw: int) -> di
         "team_defence_home",
         "team_defence_away",
         "team_tilt",
+        "venue_n_home",
+        "venue_n_away",
     )
     acc: dict[int, list[dict[str, float]]] = {}
     for r in rows:
@@ -342,6 +436,7 @@ def fixture_ticker(
     settings = settings or load_settings()
     short, names = _team_maps(conn, season)
     strength = _strength_lookup(conn, season, as_of_gw)
+    venue_n = _venue_sample_n(conn, season, as_of_gw)
     fx = conn.execute(
         """
         SELECT fixture_id, event, team_h, team_a, finished, team_h_difficulty, team_a_difficulty
@@ -400,6 +495,16 @@ def fixture_ticker(
             att_ease_vals.append(att_ease)
             def_ease_vals.append(pcs)
             ha = "H" if home else "A"
+            sample = venue_n.get(int(tid), {"home": 0, "away": 0})
+            n_venue = int(sample["home"] if home else sample["away"])
+            if n_venue <= 0:
+                feat_n = strength.get(int(tid), {}).get("venue_n_home" if home else "venue_n_away")
+                if feat_n is not None:
+                    try:
+                        n_venue = int(float(feat_n))
+                    except (TypeError, ValueError):
+                        n_venue = 0
+            thin = n_venue < VENUE_THIN_N
             fixtures.append(
                 {
                     "event": int(fr["event"]),
@@ -414,6 +519,8 @@ def fixture_ticker(
                     "p_cs": round(pcs, 3),
                     "opp_xg": round(float(packed["opp_attack"]), 2),
                     "blank": False,
+                    "venue_n": n_venue,
+                    "thin_venue": thin,
                 }
             )
         # Fill blanks for missing events in horizon
@@ -434,6 +541,8 @@ def fixture_ticker(
                         "p_cs": None,
                         "opp_xg": None,
                         "blank": True,
+                        "venue_n": None,
+                        "thin_venue": False,
                     }
                 )
         fixtures.sort(key=lambda f: f["event"])
@@ -470,6 +579,7 @@ def fixture_ticker(
                 f"{f['opp_name'] or f['opp']} ({'H' if f['home'] else 'A'}) · "
                 f"ease {ease:.2f} (leak {leak:.2f} × own xG {f['own_xg']:.2f}) · "
                 f"P(CS) {pcs:.0%} · {f['rating']}"
+                + (f" · n={int(f['venue_n'])} {('home' if f['home'] else 'away')} (thin venue)" if f.get("thin_venue") else "")
             )
 
     teams_out.sort(key=lambda t: (-(t["avg_fixtures"] or 0), t["team"] or ""))
@@ -482,6 +592,60 @@ def fixture_ticker(
     }
 
 
+def attach_weekly_xpts(
+    conn: sqlite3.Connection,
+    season: str,
+    as_of_gw: int,
+    players: list[dict[str, Any]],
+    settings: Settings | None = None,
+) -> None:
+    """Per-GW xPts over the scoring window (blanks 0, DGWs both matches)."""
+    from dataclasses import replace
+
+    from fpl_model.config import load_weights
+    from fpl_model.scoring.clean_sheet import isolate_event
+    from fpl_model.scoring.engine import load_feats
+    from fpl_model.scoring.xpts import compute_xpts
+
+    if not players:
+        return
+    settings = settings or load_settings()
+    hz = max(1, int(settings.horizon_gws))
+    missing = [
+        p
+        for p in players
+        if not (isinstance(p.get("xpts_gws"), list) and len(p["xpts_gws"]) >= hz)
+    ]
+    if not missing:
+        return
+    feats = load_feats(conn, season, as_of_gw, fpl_ids=[int(p["fpl_id"]) for p in missing])
+    if feats.empty or "fpl_id" not in feats.columns:
+        for p in missing:
+            p["xpts_gws"] = [0.0] * hz
+        return
+    gw1 = replace(settings, horizon_gws=1)
+    weights = load_weights()
+    by_id: dict[int, list[float]] = {int(p["fpl_id"]): [0.0] * hz for p in missing}
+    base_fx = feats["fixtures_json"] if "fixtures_json" in feats.columns else None
+    for offset in range(hz):
+        event = int(as_of_gw) + offset
+        df = feats
+        if base_fx is not None:
+            df = feats.copy()
+            df["fixtures_json"] = base_fx.map(lambda j, ev=event: isolate_event(j, ev))
+        if offset == 0 and "availability" in df.columns:
+            df["availability_horizon"] = df["availability"]
+        elif offset > 0 and "availability_later" in df.columns:
+            df["availability_horizon"] = df["availability_later"]
+        series = compute_xpts(df, weights, gw1)
+        for fid, val in zip(df["fpl_id"].tolist(), series.tolist()):
+            fid = int(fid)
+            if fid in by_id:
+                by_id[fid][offset] = round(float(val or 0), 3)
+    for p in missing:
+        p["xpts_gws"] = by_id.get(int(p["fpl_id"]), [0.0] * hz)
+
+
 def build_xi(
     conn: sqlite3.Connection,
     season: str,
@@ -489,6 +653,10 @@ def build_xi(
     *,
     budget: float = 100.0,
     objective: str = "xpts",
+    exclude: list[int] | None = None,
+    exclude_teams: list[int] | None = None,
+    include: list[int] | None = None,
+    lock: list[int] | None = None,
 ) -> dict[str, Any]:
     from fpl_model.squad.optimize import build_squad
 
@@ -499,7 +667,21 @@ def build_xi(
         sort=objective if objective in ("xpts", "overall") else "overall",
         limit=2000,
     )
-    result = build_squad(players, budget=budget, objective=objective)
+    settings = load_settings()
+    attach_weekly_xpts(conn, season, as_of_gw, players, settings)
+    ban = [int(x) for x in (exclude or [])]
+    team_ban = [int(x) for x in (exclude_teams or [])]
+    allow = [int(x) for x in (include or [])]
+    locked = [int(x) for x in (lock or [])]
+    result = build_squad(
+        players,
+        budget=budget,
+        objective=objective,
+        exclude=ban,
+        exclude_teams=team_ban,
+        include=allow,
+        lock=locked,
+    )
 
     def slim(p: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -510,11 +692,19 @@ def build_xi(
             "team_id": p.get("team_id"),
             "price": p.get("price"),
             "xpts": p.get("xpts"),
+            "xpts_next": p.get("xpts_next"),
+            "xpts_gws": p.get("xpts_gws"),
             "overall": p.get("overall"),
             "upside": p.get("upside"),
             "action": p.get("action"),
+            "combined": p.get("combined"),
+            "bench_only": p.get("_xi_ok") is False,
+            "locked": int(p["fpl_id"]) in set(locked),
         }
 
+    excluded_players = [slim(p) for p in players if int(p["fpl_id"]) in set(ban)]
+    included_players = [slim(p) for p in players if int(p["fpl_id"]) in set(allow)]
+    locked_players = [slim(p) for p in players if int(p["fpl_id"]) in set(locked)]
     return {
         "season": season,
         "as_of_gw": as_of_gw,
@@ -525,12 +715,22 @@ def build_xi(
         "objective": result["objective"],
         "squad_objective": result["squad_objective"],
         "xi_objective": result["xi_objective"],
+        "xi_xpts": round(sum(float(p.get("xpts") or 0) for p in result["xi"]), 2),
+        "xi_overall": round(sum(float(p.get("overall") or 0) for p in result["xi"]), 1),
         "formation": result["formation"],
         "captain": slim(result["captain"]) if result.get("captain") else None,
         "xi": [slim(p) for p in result["xi"]],
         "bench": [slim(p) for p in result["bench"]],
         "squad": [slim(p) for p in result["squad"]],
         "by_position": {k: [slim(p) for p in v] for k, v in result["by_position"].items()},
+        "excluded": excluded_players,
+        "excluded_ids": sorted(set(ban)),
+        "excluded_teams": sorted(set(team_ban)),
+        "included": included_players,
+        "included_ids": sorted(set(allow)),
+        "locked": locked_players,
+        "locked_ids": sorted(set(locked)),
+        "error": result.get("error"),
     }
 
 
@@ -561,15 +761,24 @@ def _gw_fixture_labels(
     return {tid: " / ".join(v) if v else "BLANK" for tid, v in labels.items()}
 
 
+def _lineup_event(as_of_gw: int, event: int | None, horizon_gws: int) -> int:
+    hz = max(1, int(horizon_gws))
+    lo, hi = int(as_of_gw), int(as_of_gw) + hz - 1
+    if event is None:
+        return lo
+    return max(lo, min(int(event), hi))
+
+
 def lineup_for_squad(
     conn: sqlite3.Connection,
     season: str,
     as_of_gw: int,
     squad_ids: list[int],
     *,
+    event: int | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
-    """Best legal starting XI from a saved 15, using next-GW xPts only."""
+    """Best legal starting XI from a saved 15, using one GW's fixtures (T, T+1, …)."""
     from dataclasses import replace
 
     from fpl_model.config import load_weights
@@ -579,12 +788,15 @@ def lineup_for_squad(
     from fpl_model.squad.optimize import pick_xi
 
     settings = settings or load_settings()
+    target = _lineup_event(as_of_gw, event, settings.horizon_gws)
+    offset = target - int(as_of_gw)
     ids = [int(i) for i in squad_ids]
     empty: dict[str, Any] = {
         "ok": False,
         "season": season,
         "as_of_gw": as_of_gw,
-        "event": as_of_gw,
+        "event": target,
+        "offset": offset,
         "xi": [],
         "bench": [],
         "captain": None,
@@ -595,28 +807,37 @@ def lineup_for_squad(
         empty["error"] = f"need a full 15-man squad (currently {len(set(ids))})"
         return empty
 
-    feats = load_feats(conn, season, as_of_gw, fpl_ids=ids)
-    if feats.empty or "fpl_id" not in feats.columns:
-        empty["error"] = "no features for this as-of"
-        return empty
-    fid_col = feats["fpl_id"]
-    if isinstance(fid_col, pd.DataFrame):
-        feats = feats.copy()
-        feats["fpl_id"] = fid_col.iloc[:, 0]
-    feats = feats.drop_duplicates(subset=["fpl_id"], keep="last")
-    if len(feats) != 15:
-        empty["error"] = "scores missing for some squad players"
-        return empty
-
-    gw1 = replace(settings, horizon_gws=1)
-    if "fixtures_json" in feats.columns:
-        feats["fixtures_json"] = feats["fixtures_json"].map(lambda j: isolate_event(j, as_of_gw))
-    feats["xpts_gw"] = compute_xpts(feats, load_weights(), gw1)
-
     by_id = {p["fpl_id"]: p for p in list_players(conn, season, as_of_gw, sort="xpts", ids=ids)}
-    xmap = pd.to_numeric(feats.set_index("fpl_id")["xpts_gw"], errors="coerce")
+    stored_ok = all(
+        isinstance(p.get("xpts_gws"), list) and len(p["xpts_gws"]) > offset for p in by_id.values()
+    )
+    if stored_ok:
+        xmap = {int(fid): float(p["xpts_gws"][offset] or 0) for fid, p in by_id.items()}
+    else:
+        feats = load_feats(conn, season, as_of_gw, fpl_ids=ids)
+        if feats.empty or "fpl_id" not in feats.columns:
+            empty["error"] = "no features for this as-of"
+            return empty
+        fid_col = feats["fpl_id"]
+        if isinstance(fid_col, pd.DataFrame):
+            feats = feats.copy()
+            feats["fpl_id"] = fid_col.iloc[:, 0]
+        feats = feats.drop_duplicates(subset=["fpl_id"], keep="last")
+        if len(feats) != 15:
+            empty["error"] = "scores missing for some squad players"
+            return empty
+        gw1 = replace(settings, horizon_gws=1)
+        if "fixtures_json" in feats.columns:
+            feats["fixtures_json"] = feats["fixtures_json"].map(lambda j: isolate_event(j, target))
+        if offset == 0 and "availability" in feats.columns:
+            feats["availability_horizon"] = feats["availability"]
+        elif offset > 0 and "availability_later" in feats.columns:
+            feats["availability_horizon"] = feats["availability_later"]
+        feats["xpts_gw"] = compute_xpts(feats, load_weights(), gw1)
+        xmap = {int(k): float(v or 0) for k, v in pd.to_numeric(feats.set_index("fpl_id")["xpts_gw"], errors="coerce").items()}
+
     team_ids = [p.get("team_id") for p in by_id.values() if p.get("team_id") is not None]
-    fx_by_team = _gw_fixture_labels(conn, season, as_of_gw, team_ids)
+    fx_by_team = _gw_fixture_labels(conn, season, target, team_ids)
 
     squad: list[dict[str, Any]] = []
     for fid in ids:
@@ -625,10 +846,7 @@ def lineup_for_squad(
             empty["error"] = "scores missing for some squad players"
             return empty
         row = dict(p)
-        try:
-            row["xpts_gw"] = round(float(xmap.loc[fid]), 2)
-        except (KeyError, TypeError, ValueError):
-            row["xpts_gw"] = 0.0
+        row["xpts_gw"] = round(float(xmap.get(int(fid), 0.0)), 2)
         tid = row.get("team_id")
         row["fixture"] = fx_by_team.get(int(tid), "BLANK") if tid is not None else "BLANK"
         squad.append(row)
@@ -648,6 +866,8 @@ def lineup_for_squad(
             "overall": p.get("overall"),
             "fixture": p.get("fixture"),
             "action": p.get("action"),
+            "availability": p.get("availability"),
+            "minutes_risk": p.get("minutes_risk"),
         }
 
     cap = pack.get("captain")
@@ -655,7 +875,8 @@ def lineup_for_squad(
         "ok": bool(pack.get("xi")),
         "season": season,
         "as_of_gw": as_of_gw,
-        "event": as_of_gw,
+        "event": target,
+        "offset": offset,
         "horizon_gws": 1,
         "objective": "xpts_gw",
         "formation": pack["formation"],
@@ -667,6 +888,71 @@ def lineup_for_squad(
     }
 
 
+def _enrich_transfer_players(
+    conn: sqlite3.Connection,
+    season: str,
+    as_of_gw: int,
+    players: list[dict[str, Any]],
+    horizon_gws: int,
+) -> None:
+    """Attach availability / xpts_next / fixtures_json for transfer suggestions."""
+    if not players:
+        return
+    ids = [int(p["fpl_id"]) for p in players]
+    placeholders = ",".join("?" * len(ids))
+    feat_rows = conn.execute(
+        f"""
+        SELECT fpl_id, features_json FROM feat_player_asof
+        WHERE season = ? AND as_of_gw = ? AND fpl_id IN ({placeholders})
+        """,
+        (season, as_of_gw, *ids),
+    ).fetchall()
+    score_rows = conn.execute(
+        f"""
+        SELECT fpl_id, card_json FROM score_player_asof
+        WHERE season = ? AND as_of_gw = ? AND fpl_id IN ({placeholders})
+        """,
+        (season, as_of_gw, *ids),
+    ).fetchall()
+    feats: dict[int, dict] = {}
+    for r in feat_rows:
+        try:
+            feats[int(r["fpl_id"])] = json.loads(r["features_json"] or "{}")
+        except json.JSONDecodeError:
+            feats[int(r["fpl_id"])] = {}
+    cards: dict[int, dict] = {}
+    for r in score_rows:
+        try:
+            cards[int(r["fpl_id"])] = json.loads(r["card_json"] or "{}")
+        except json.JSONDecodeError:
+            cards[int(r["fpl_id"])] = {}
+    for p in players:
+        fid = int(p["fpl_id"])
+        f = feats.get(fid) or {}
+        c = cards.get(fid) or {}
+        p["availability"] = c.get("availability", f.get("availability", 1.0))
+        p["availability_horizon"] = c.get("availability_horizon", f.get("availability_horizon", p["availability"]))
+        p["xpts_next"] = c.get("xpts_next")
+        p["xpts_gws"] = c.get("xpts_gws") or p.get("xpts_gws")
+        p["fixtures_json"] = f.get("fixtures_json", "{}")
+        p["price_change"] = f.get("price_change", 0.0)
+        p["minutes_risk"] = c.get("minutes_risk") or minutes_risk(
+            availability=p.get("availability"),
+            status=p.get("status"),
+            news=p.get("news"),
+            chance_this=f.get("chance_of_playing_this"),
+            chance_next=f.get("chance_of_playing_next"),
+            slot_security=f.get("slot_security"),
+            pos_slot_rank=f.get("pos_slot_rank"),
+            position=p.get("position"),
+            start_pct_l5=f.get("start_pct_l5"),
+            minutes=f.get("minutes"),
+            starts=f.get("starts"),
+            appearances=f.get("appearances"),
+        )
+    annotate_fixture_flags(players, horizon_gws)
+
+
 def transfers_for_squad(
     conn: sqlite3.Connection,
     season: str,
@@ -674,18 +960,36 @@ def transfers_for_squad(
     squad_ids: list[int],
     *,
     bank: float = 0.0,
+    budget: float = 100.0,
     free_transfers: int = 1,
     objective: str = "xpts",
+    settings: Settings | None = None,
+    exclude: list[int] | None = None,
+    exclude_teams: list[int] | None = None,
+    include: list[int] | None = None,
+    keep: list[int] | None = None,
+    want_transfers: int | None = None,
+    committed: list | None = None,
 ) -> dict[str, Any]:
-    pool = list_players(conn, season, as_of_gw, sort=objective, limit=2000)
+    settings = settings or load_settings()
+    pool = list_players(conn, season, as_of_gw, sort="xpts" if objective == "combined" else objective, limit=2000)
+    _enrich_transfer_players(conn, season, as_of_gw, pool, settings.horizon_gws)
     by_id = {p["fpl_id"]: p for p in pool}
     squad = [by_id[i] for i in squad_ids if i in by_id]
     result = suggest_transfers(
         squad,
         pool,
         bank=bank,
+        budget=budget,
         free_transfers=free_transfers,
         objective=objective,
+        horizon_gws=settings.horizon_gws,
+        exclude=exclude,
+        exclude_teams=exclude_teams,
+        include=include,
+        keep=keep,
+        want_transfers=want_transfers,
+        committed=committed,
     )
     result["season"] = season
     result["as_of_gw"] = as_of_gw
@@ -697,12 +1001,115 @@ def transfers_for_squad(
             "team": p.get("team"),
             "price": p.get("price"),
             "xpts": p.get("xpts"),
+            "xpts_next": p.get("xpts_next"),
             "overall": p.get("overall"),
             "action": p.get("action"),
+            "availability": p.get("availability"),
+            "blank_next": p.get("blank_next"),
+            "minutes_risk": p.get("minutes_risk"),
         }
         for p in squad
     ]
     return result
+
+
+def rebuild_for_squad(
+    conn: sqlite3.Connection,
+    season: str,
+    as_of_gw: int,
+    squad_ids: list[int],
+    *,
+    chip: str = "wildcard",
+    bank: float = 0.0,
+    budget: float = 100.0,
+    objective: str = "xpts",
+    settings: Settings | None = None,
+    exclude: list[int] | None = None,
+    exclude_teams: list[int] | None = None,
+    include: list[int] | None = None,
+    keep: list[int] | None = None,
+) -> dict[str, Any]:
+    settings = settings or load_settings()
+    pool = list_players(conn, season, as_of_gw, sort="xpts" if objective == "combined" else objective, limit=2000)
+    _enrich_transfer_players(conn, season, as_of_gw, pool, settings.horizon_gws)
+    by_id = {p["fpl_id"]: p for p in pool}
+    squad = [by_id[i] for i in squad_ids if i in by_id]
+    result = rebuild_on_chip(
+        squad,
+        pool,
+        chip=chip,
+        bank=bank,
+        budget=budget,
+        objective=objective,
+        keep=keep,
+        exclude=exclude,
+        exclude_teams=exclude_teams,
+        include=include,
+    )
+    result["season"] = season
+    result["as_of_gw"] = as_of_gw
+
+    def slim(p: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "fpl_id": p["fpl_id"],
+            "web_name": p["web_name"],
+            "position": p["position"],
+            "team": p.get("team"),
+            "team_id": p.get("team_id"),
+            "price": p.get("price"),
+            "xpts": p.get("xpts"),
+            "xpts_next": p.get("xpts_next"),
+            "overall": p.get("overall"),
+            "action": p.get("action"),
+        }
+
+    if result.get("squad"):
+        result["squad"] = [slim(p) for p in result["squad"]]
+        result["xi"] = [slim(p) for p in (result.get("xi") or [])]
+        result["bench"] = [slim(p) for p in (result.get("bench") or [])]
+        cap = result.get("captain")
+        result["captain"] = slim(cap) if cap else None
+        result["ids"] = [p["fpl_id"] for p in result["squad"]]
+    return result
+
+
+def latest_calibration(conn: sqlite3.Connection, season: str, as_of_gw: int | None = None) -> dict[str, Any] | None:
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "fact_calibrate_asof" not in tables:
+        return None
+    if as_of_gw is not None:
+        row = conn.execute(
+            """
+            SELECT season, as_of_gw, n, mae, bias, unmatched, breakdown_json, computed_at
+            FROM fact_calibrate_asof WHERE season = ? AND as_of_gw = ?
+            """,
+            (season, int(as_of_gw)),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT season, as_of_gw, n, mae, bias, unmatched, breakdown_json, computed_at
+            FROM fact_calibrate_asof WHERE season = ? ORDER BY as_of_gw DESC LIMIT 1
+            """,
+            (season,),
+        ).fetchone()
+    if row is None:
+        return None
+    breakdown = {}
+    try:
+        breakdown = json.loads(row["breakdown_json"] or "{}")
+    except json.JSONDecodeError:
+        breakdown = {}
+    return {
+        "season": row["season"],
+        "as_of_gw": int(row["as_of_gw"]),
+        "n": int(row["n"] or 0),
+        "mae": row["mae"],
+        "bias": row["bias"],
+        "unmatched": row["unmatched"],
+        "computed_at": row["computed_at"],
+        **breakdown,
+    }
 
 
 def _round(v: Any, nd: int = 1) -> float | None:
@@ -737,4 +1144,39 @@ def _player_row(r: sqlite3.Row) -> dict[str, Any]:
         "M": _round(r["M"]),
         "O": _round(r["O"]),
         "V": _round(r["V"]),
+        "xpts_next": _round(r["xpts_next"], 2) if "xpts_next" in r.keys() else None,
+        "xpts_gws": _parse_xpts_gws(r["xpts_gws"]) if "xpts_gws" in r.keys() else None,
+        "flags": _parse_flags(r["flags"]) if "flags" in r.keys() else None,
+        "minutes_risk": _parse_flags(r["minutes_risk"]) if "minutes_risk" in r.keys() else None,
+        "availability": _round(r["availability"], 3) if "availability" in r.keys() else None,
+        "news": r["news"] if "news" in r.keys() else None,
     }
+
+
+def _parse_xpts_gws(raw: Any) -> list[float] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, (list, tuple)):
+        return [float(x or 0) for x in raw]
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, list):
+            return [float(x or 0) for x in parsed]
+    return None
+
+
+def _parse_flags(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None

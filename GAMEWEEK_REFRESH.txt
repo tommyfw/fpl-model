@@ -9,6 +9,45 @@ next 5 gameweeks. `fpl-model update` sets T from FPL (current unfinished GW).
 Example: after GW2 is done, T is usually 3.
 
 
+When each source updates (typical PL weekend)
+---------------------------------------------
+None of these publish a hard SLA; treat the times as “usually ready by”.
+
+  FPL API (live ingest)
+    - Points / minutes / BPS: minutes after each FT.
+    - Bonus: ~2 hours after each match (can slip).
+    - GW “done” for scoring: after the last FT of the GW + bonus locked
+      (Sunday night, or Monday night if there is a late game).
+    - Prices: ~1–2 hours after the day’s last relevant kickoff window.
+    - News / chance_of_playing / ownership: continuous; refresh again before
+      the next deadline.
+    - is_current flips to the next GW once FPL marks the old one finished.
+
+  Understat
+    - Shot/xG during or soon after matches (minutes → a couple of hours).
+    - Safe for weekly refresh: last FT of the GW + a few hours, or next morning.
+    - If a late kickoff looks missing, rerun Understat next morning.
+
+  FBref (manual HTML — Cloudflare blocks auto-fetch)
+    - Standard stats: often same day → next morning.
+    - Defense / possession / keepersadv (PSxG): hours → a day; Opta columns
+      can stay blank if you save too early.
+    - Best: Mon or Tue once tables show real numbers.
+
+  Vaastav GitHub archive
+    - Historical only (not for live weekly scoring). Pushed when the maintainer
+      scrapes — do not rely on it for the current GW.
+
+Suggested cadence
+  1) After last FT + ~2h (bonus settled): optional quick
+       fpl-model update --skip-fbref
+     for FPL + Understat only.
+  2) Mon/Tue: save FBref HTML (section 1), then full
+       fpl-model update
+  3) Before next deadline: one more update for news / prices / lineups
+     (FBref skip is fine if files are already current).
+
+
 0. Open a terminal
 -----------------
 cd /Users/thomas/FPL-Model
@@ -17,6 +56,8 @@ source .venv/bin/activate
 
 1. Download FBref HTML (browser — Cloudflare blocks auto-fetch)
 ---------------------------------------------------------------
+Prefer Mon/Tue after the GW (see “When each source updates” above).
+
 Save each page as “Webpage, Complete” or “HTML only” into:
 
   data/raw/fbref/2026-27/
@@ -99,24 +140,51 @@ If not:
 Then open http://127.0.0.1:8766
 
 If the UI looks stuck on an old build, stop the old process and start it again
-on the same port.
+on the same port. Hard-refresh (Cmd-Shift-R) after JS changes.
+
+
+5. Do not loosen Understat matching
+------------------------------------
+Unmatched players stay unmatched. They get FPL-proxy xG, a “No Understat map”
+badge, and a weaker Underlying score. Do not add fuzzy aliases or bulk-edit
+config/player_aliases.yaml unless you are sure of the identity.
+
+  fpl-model id-map --season 2026-27 --export-only
+
+Review the CSV. Only add an alias when the names are the same person.
+
+
+6. Calibrate after a GW is in the book
+---------------------------------------
+Uses stored scores (does not overwrite). As-of T’s xPts-next vs actual points
+in GW T. For early-season rank quality on a prior season:
+
+  fpl-model calibrate --season 2026-27 --as-of 2
+  fpl-model early-check --season 2025-26
+
+Calibration is stored in the DB (and shown on the Fixtures tab). `update` also
+tries to calibrate the previous GW once official points are in.
+
+If you already rescored as-of 2 after GW2 finished, that calibration leaks.
+Use a historical season, or scores you saved before that GW’s results.
 
 
 Optional
 --------
-Understat id mismatches (new signings / spelling):
+Understat id mismatches (new signings / spelling): only when you are sure.
 
   fpl-model id-map --season 2026-27 --export-only
-
-Review the CSV it prints, add aliases in config/player_aliases.yaml if needed,
-then rematch:
-
   fpl-model id-map --season 2026-27
   fpl-model features --season 2026-27 --as-of 3
   fpl-model score --season 2026-27 --as-of 3
 
 Do not ingest 2025-26 into the live run or pool gameweeks across seasons.
 
+
+Optional: import your FPL squad in the UI (My team → FPL team ID from
+fantasy.premierleague.com/entry/YOUR_ID/). Public picks can be hidden until
+the deadline — if import fails, wait until the current GW starts, or save
+the £100m XI as your team.
 
 Quick copy-paste (after FBref files are in place)
 ---------------

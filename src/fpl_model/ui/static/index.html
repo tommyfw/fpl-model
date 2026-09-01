@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FPL player cards</title>
-    <link rel="stylesheet" href="/app.css?v=fx5" />
+    <link rel="stylesheet" href="/app.css?v=next-impl-1" />
   </head>
   <body>
     <header class="top">
@@ -36,6 +36,9 @@
           <option value="quality">Quality</option>
           <option value="minutes">Minutes</option>
           <option value="fixtures">Fixtures</option>
+        </select>
+        <select id="club" aria-label="Club">
+          <option value="">All clubs</option>
         </select>
       </div>
       <nav class="pills" id="pos-pills">
@@ -96,6 +99,7 @@
           <select id="xi-objective">
             <option value="xpts">xPts</option>
             <option value="overall">Overall</option>
+            <option value="combined">xPts + Overall</option>
           </select>
         </label>
         <label>Budget £
@@ -103,7 +107,19 @@
         </label>
         <button id="xi-build" class="primary">Build squad</button>
         <button id="xi-save-team" class="ghost">Save as my team</button>
+        <label>Exclude club
+          <select id="xi-exclude-club" aria-label="Exclude club from XI"></select>
+        </label>
+        <button id="xi-exclude-club-add" class="ghost" type="button">Exclude club</button>
         <span id="xi-summary" class="xi-summary"></span>
+      </div>
+      <div class="xi-exclude">
+        <h3>Excluded from XI</h3>
+        <p id="xi-exclude-empty" class="empty">Ban a club or player from the starting XI, or include someone the builder must keep (remaining budget is optimized around them).</p>
+        <div id="xi-lock-list" class="xi-line" style="justify-content:flex-start"></div>
+        <div id="xi-exclude-teams" class="xi-line" style="justify-content:flex-start"></div>
+        <div id="xi-exclude-list" class="xi-line" style="justify-content:flex-start"></div>
+        <div id="xi-include-list" class="xi-line" style="justify-content:flex-start"></div>
       </div>
       <main class="xi-main">
         <section class="list-pane xi-board" id="xi-board">
@@ -114,26 +130,42 @@
 
     <section id="view-team" class="view hidden">
       <div class="xi-controls">
+        <label>FPL team ID
+          <input id="team-entry" type="number" min="1" step="1" placeholder="1234567" />
+        </label>
+        <button id="team-import" class="ghost">Import from FPL</button>
         <label>Bank £
-          <input id="team-bank" type="number" min="0" max="20" step="0.1" value="0" />
+          <input id="team-bank" type="number" min="0" max="30" step="0.1" value="0" />
+        </label>
+        <label>Max squad £
+          <input id="team-budget" type="number" min="80" max="150" step="0.1" value="100" />
         </label>
         <label>Free transfers
           <input id="team-ft" type="number" min="0" max="5" step="1" value="1" />
+        </label>
+        <label>Transfers
+          <input id="team-want" type="number" min="1" max="5" step="1" value="2" />
         </label>
         <label>Objective
           <select id="team-objective">
             <option value="xpts">xPts</option>
             <option value="overall">Overall</option>
+            <option value="combined">xPts + Overall</option>
           </select>
+        </label>
+        <label>Lineup for
+          <select id="team-event" aria-label="Lineup gameweek"></select>
         </label>
         <button id="team-lineup" class="primary">Optimise XI</button>
         <button id="team-suggest" class="ghost">Suggest transfers</button>
+        <button id="team-wildcard" class="ghost">Wildcard rebuild</button>
+        <button id="team-freehit" class="ghost">Free hit rebuild</button>
         <button id="team-clear" class="ghost">Clear team</button>
         <span id="team-summary" class="xi-summary"></span>
       </div>
       <main class="xi-main team-layout">
         <section class="list-pane xi-board" id="team-board">
-          <p class="empty">Save a 15-man squad from the £100m XI tab, or add players with “+ Team” on a card.</p>
+          <p class="empty">Save a 15-man squad from the £100m XI tab, or add players with “+ Team” on a card. Lock a player so Suggest transfers will not sell them.</p>
         </section>
         <section class="list-pane xi-board" id="transfer-board">
           <p class="empty">Transfer suggestions appear here.</p>
@@ -143,8 +175,9 @@
 
     <section id="view-fixtures" class="view hidden">
       <div class="xi-controls">
-        <span class="xi-summary">Same fixture pack as the scorer. Chip colour = opponent leak × your attack (fixed PL bands). Sorted by mean Fixtures (O).</span>
+        <span class="xi-summary">Same fixture pack as the scorer. Chip colour = opponent leak × your attack (fixed PL bands). Sorted by mean Fixtures (O). Thin venue = few home/away games this season.</span>
       </div>
+      <div id="calibrate-board" class="xi-controls"></div>
       <main class="xi-main">
         <section class="list-pane xi-board" id="fixture-board">
           <p class="empty">Loading fixtures…</p>
@@ -152,6 +185,6 @@
       </main>
     </section>
 
-    <script src="/app.js?v=fx5"></script>
+    <script src="/app.js?v=next-impl-1"></script>
   </body>
 </html>

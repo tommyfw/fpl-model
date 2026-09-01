@@ -52,6 +52,14 @@ def test_weight_blocks_sum_to_one():
         assert abs(sum(leaf.values()) - 1.0) < 1e-6, key
 
 
+def test_unmatched_understat_pulls_u_toward_50():
+    settings = load_settings()
+    weights = load_weights()
+    df = _base(understat_matched=[1, 0])
+    scored = score_feature_frame(df, weights, settings)
+    assert abs(float(scored.loc[1, "U"]) - 50.0) < abs(float(scored.loc[0, "U"]) - 50.0)
+
+
 def test_cb_u_beats_fb_on_cs_profile():
     settings = load_settings()
     weights = load_weights()
@@ -66,11 +74,11 @@ def test_gk_u_does_not_use_fpl_output_leaf():
     assert "shot_stopping" in w["underlying"]["GK"]
 
 
-def test_own_xg_lifts_attack_xpts():
+def test_opponent_leak_lifts_attack_xpts():
     settings = load_settings()
     weights = load_weights()
-    weak = json.dumps({"2": [{"home": 1, "opp_defence_leak": 1.2, "opp_attack": 1.2, "p_cs": 0.2, "own_xg": 0.7}]})
-    strong = json.dumps({"2": [{"home": 1, "opp_defence_leak": 1.2, "opp_attack": 1.2, "p_cs": 0.2, "own_xg": 2.0}]})
+    weak = json.dumps({"2": [{"home": 1, "opp_defence_leak": 0.75, "opp_attack": 1.2, "p_cs": 0.2, "own_xg": 1.4}]})
+    strong = json.dumps({"2": [{"home": 1, "opp_defence_leak": 1.9, "opp_attack": 1.2, "p_cs": 0.2, "own_xg": 1.4}]})
     cols = {
         "position": ["MID", "MID"],
         "start_pct": [1.0, 1.0],

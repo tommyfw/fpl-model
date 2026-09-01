@@ -33,6 +33,7 @@ class Settings:
     promoted_prior_quantile: float
     promoted_player_prior_scale: float
     venue_prior_matches: int
+    defcon_prior_matches: int
     defcon_threshold: dict[str, int | None]
 
     @property
@@ -63,6 +64,7 @@ def load_settings(path: Path | None = None) -> Settings:
         promoted_prior_quantile=float(raw.get("promoted_prior_quantile", 0.25)),
         promoted_player_prior_scale=float(raw.get("promoted_player_prior_scale", 0.78)),
         venue_prior_matches=int(raw.get("venue_prior_matches", 4)),
+        defcon_prior_matches=int(raw.get("defcon_prior_matches", 6)),
         defcon_threshold=dict(raw["defcon_threshold"]),
     )
 

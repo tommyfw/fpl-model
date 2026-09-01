@@ -23,6 +23,7 @@ def test_wasted_chances_raise_finishing_upside():
             "team_attack_trend": [0.0, 0.0],
             "team_defence_trend": [0.0, 0.0],
             "last_selected": [100_000, 100_000],
+            "matches": [12, 12],
         }
     )
     out = compute_upside(waste, weights)
@@ -78,6 +79,7 @@ def test_compute_upside_not_stuck_at_fifty():
             "team_attack_trend": [0.4, -0.3, 0.0, 0.2],
             "team_defence_trend": [0.1, -0.2, 0.0, 0.3],
             "last_selected": [1_000, 8_000_000, 500_000, 2_000_000],
+            "matches": [12, 12, 12, 12],
         }
     )
     out = compute_upside(df, weights)

@@ -9,11 +9,18 @@ from fpl_model.squad.optimize import build_squad
 from fpl_model.backtest.squad import evaluate_window, xi_actual_points
 
 
-def _fx(n_matches: int, leak=1.2, att=1.2, start_gw=2, p_cs=0.3, home=1.0):
+def _fx(n_matches: int, leak=1.2, att=1.2, start_gw=2, p_cs=0.3, home=1.0, own_xg=1.2, own_xga=1.2):
     by = {}
     for i in range(n_matches):
         by[str(start_gw + i)] = [
-            {"home": home, "opp_defence_leak": leak, "opp_attack": att, "p_cs": p_cs, "own_xga": 1.2, "own_xg": 1.2}
+            {
+                "home": home,
+                "opp_defence_leak": leak,
+                "opp_attack": att,
+                "p_cs": p_cs,
+                "own_xga": own_xga,
+                "own_xg": own_xg,
+            }
         ]
     return json.dumps(by)
 
@@ -87,7 +94,107 @@ def test_fixture_tilt_is_mild():
     )
     xp = compute_xpts(df, weights, settings)
     ratio = float(xp.iloc[0] / xp.iloc[1])
-    assert 1.0 < ratio < 1.5
+    assert 1.12 < ratio < 2.2
+
+
+def test_away_vs_elite_defence_is_not_a_goal():
+    """João Pedro vs Arsenal should not look like ~1 expected goal (old clip was ±6%)."""
+    settings = load_settings()
+    weights = load_weights()
+    arsenal = _fx(1, leak=0.76, att=2.0, p_cs=0.14, own_xg=1.90, home=0.0)
+    df = pd.DataFrame(
+        {
+            "position": ["FWD"],
+            "start_pct": [0.95],
+            "start_pct_l5": [1.0],
+            "minutes_pct": [0.90],
+            "availability": [1.0],
+            "matches": [2],
+            "npxg90": [0.62],
+            "npxa90": [0.31],
+            "saves90": [0.0],
+            "defcon_hit_rate": [0.0],
+            "bonus90": [1.3],
+            "fixtures_json": [arsenal],
+        }
+    )
+    xp = float(compute_xpts(df, weights, settings).iloc[0])
+    assert xp < 5.0
+
+
+def test_pen_taker_lifts_fwd_xpts():
+    settings = load_settings()
+    weights = load_weights()
+    fx = _fx(1, leak=1.35, att=1.2, p_cs=0.2)
+    cols = dict(
+        position=["FWD", "FWD"],
+        start_pct=[1.0, 1.0],
+        start_pct_l5=[1.0, 1.0],
+        minutes_pct=[0.95, 0.95],
+        availability=[1.0, 1.0],
+        matches=[10, 10],
+        npxg90=[0.45, 0.45],
+        npxa90=[0.15, 0.15],
+        pen_taker=[1.0, 0.0],
+        saves90=[0.0, 0.0],
+        defcon_hit_rate=[0.0, 0.0],
+        fixtures_json=[fx, fx],
+    )
+    xp = compute_xpts(pd.DataFrame(cols), weights, settings)
+    assert float(xp.iloc[0]) > float(xp.iloc[1]) + 0.15
+
+
+def test_fwd_attack_more_fixture_sensitive_than_cb():
+    settings = load_settings()
+    weights = load_weights()
+    easy = _fx(1, leak=2.0, att=0.9, p_cs=0.22)
+    hard = _fx(1, leak=0.7, att=2.0, p_cs=0.22)
+    base = dict(
+        start_pct=[1.0, 1.0],
+        start_pct_l5=[1.0, 1.0],
+        minutes_pct=[0.95, 0.95],
+        availability=[1.0, 1.0],
+        matches=[10, 10],
+        npxg90=[0.4, 0.4],
+        npxa90=[0.1, 0.1],
+        saves90=[0.0, 0.0],
+        defcon_hit_rate=[0.0, 0.0],
+        fixtures_json=[easy, hard],
+    )
+    fwd = compute_xpts(pd.DataFrame({**base, "position": ["FWD", "FWD"]}), weights, settings)
+    cb = compute_xpts(
+        pd.DataFrame({**base, "position": ["DEF", "DEF"], "def_fb_share": [0.0, 0.0]}),
+        weights,
+        settings,
+    )
+    fwd_ratio = float(fwd.iloc[0] / fwd.iloc[1])
+    cb_ratio = float(cb.iloc[0] / cb.iloc[1])
+    assert fwd_ratio > cb_ratio + 0.08
+
+
+def test_early_season_cs_keeper_beats_volume_saves():
+    """Two-game save volume should not outrank a high-CS #1 (Raya vs Petrović)."""
+    settings = load_settings()
+    weights = load_weights()
+    elite = _fx(5, leak=1.1, att=1.3, p_cs=0.42)
+    leaky = _fx(5, leak=1.7, att=2.0, p_cs=0.12)
+    df = pd.DataFrame(
+        {
+            "position": ["GK", "GK"],
+            "start_pct": [1.0, 1.0],
+            "start_pct_l5": [1.0, 1.0],
+            "minutes_pct": [0.95, 0.95],
+            "availability": [1.0, 1.0],
+            "matches": [2, 2],
+            "npxg90": [0.0, 0.0],
+            "npxa90": [0.0, 0.0],
+            "saves90": [1.2, 3.4],
+            "defcon_hit_rate": [0.0, 0.0],
+            "fixtures_json": [elite, leaky],
+        }
+    )
+    xp = compute_xpts(df, weights, settings)
+    assert float(xp.iloc[0]) > float(xp.iloc[1])
 
 
 def test_home_vs_weak_attack_beats_away_vs_strong():
@@ -236,6 +343,30 @@ def test_model_xi_beats_template_when_xpts_are_true():
     pack = evaluate_window(scored, actual, polish=False)
     assert pack["model_ok"] and pack["template_ok"]
     assert pack["delta"] > 0
+
+
+def test_cs_ev_needs_sixty_minutes():
+    settings = load_settings()
+    weights = load_weights()
+    fx = _fx(5, p_cs=0.40)
+    df = pd.DataFrame(
+        {
+            "position": ["DEF", "DEF"],
+            "start_pct": [1.0, 0.95],
+            "start_pct_l5": [1.0, 0.95],
+            "minutes_pct": [0.95, 0.40],
+            "availability": [1.0, 1.0],
+            "matches": [10, 10],
+            "npxg90": [0.02, 0.02],
+            "npxa90": [0.02, 0.02],
+            "defcon_hit_rate": [0.2, 0.2],
+            "saves90": [0.0, 0.0],
+            "fixtures_json": [fx, fx],
+        }
+    )
+    xp, parts = compute_xpts(df, weights, settings, return_parts=True)
+    assert float(parts.iloc[0]["cs"]) > float(parts.iloc[1]["cs"]) * 1.5
+    assert float(xp.iloc[0]) > float(xp.iloc[1])
 
 
 def test_mid_creator_xpts_beats_defcon_merchant():

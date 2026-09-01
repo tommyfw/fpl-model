@@ -17,11 +17,15 @@ def shrink_to_mean(
     rate: pd.Series,
     minutes: pd.Series,
     prior_mean: float | pd.Series,
-    prior_minutes: int,
+    prior_minutes: int | float | pd.Series,
     max_prior_weight: float | None = None,
 ) -> pd.Series:
     m = minutes.clip(lower=0).astype(float)
-    w_obs = m / (m + prior_minutes)
+    if isinstance(prior_minutes, pd.Series):
+        pn = pd.to_numeric(prior_minutes.reindex(rate.index), errors="coerce").fillna(1.0).clip(lower=1.0)
+    else:
+        pn = float(max(prior_minutes, 1))
+    w_obs = m / (m + pn)
     w_prior = 1.0 - w_obs
     if max_prior_weight is not None:
         w_prior = w_prior.clip(upper=float(max_prior_weight))

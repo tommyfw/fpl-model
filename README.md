@@ -4,6 +4,8 @@ Explainable Fantasy Premier League suitability scores with leakage-safe backtest
 
 **Spec:** see [PLAN.md](PLAN.md) — scoring tree, metrics, data, and build order.
 
+**Weekly live refresh:** see [GAMEWEEK_REFRESH.txt](GAMEWEEK_REFRESH.txt) (when FPL / Understat / FBref usually update, plus the command checklist).
+
 ## Setup
 
 ```bash

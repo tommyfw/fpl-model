@@ -22,6 +22,15 @@ def test_own_defence_matters_not_just_opponent():
     assert tight > leaky + 0.1
 
 
+def test_expected_goals_for_drops_vs_elite_defence():
+    from fpl_model.scoring.clean_sheet import expected_goals_for
+
+    vs_avg = expected_goals_for(1.90, 1.35, home=False, league_xg=1.35)
+    vs_ars = expected_goals_for(1.90, 0.76, home=False, league_xg=1.35)
+    assert vs_ars < vs_avg * 0.70
+    assert vs_ars < 1.2
+
+
 def test_pack_fixture_includes_p_cs_and_own_xga():
     packed = pack_fixture(home=True, opp_attack=1.0, opp_defence_leak=1.4, own_xga=0.9, league_xg=1.35)
     assert 0.03 <= packed["p_cs"] <= 0.45
@@ -104,4 +113,23 @@ def test_isolate_event_does_not_promote_later_gw_after_blank():
     assert '"2"' in only
     assert horizon_p_cs(only, horizon=1, fallback=0.1) == 0.1
     assert abs(horizon_p_cs(isolate_event(fx, 3), horizon=1, fallback=0.1) - 0.4) < 1e-9
+
+
+def test_dixon_coles_rho_zero_is_poisson():
+    from fpl_model.scoring.clean_sheet import LAMBDA_MIN, LAMBDA_MAX, PCS_MAX, PCS_MIN, dixon_coles_p_cs
+
+    mu = 1.2
+    pois = float(__import__("numpy").exp(-mu))
+    got = dixon_coles_p_cs(mu, 1.4, rho=0.0)
+    clipped = float(__import__("numpy").clip(pois, PCS_MIN, PCS_MAX))
+    assert abs(got - clipped) < 1e-9
+    with_rho = dixon_coles_p_cs(mu, 1.4, rho=0.10)
+    assert got != with_rho
+    assert LAMBDA_MIN <= mu <= LAMBDA_MAX
+
+
+def test_pack_fixture_has_match_xg():
+    packed = pack_fixture(home=True, opp_attack=1.0, opp_defence_leak=1.4, own_xga=0.9, league_xg=1.35, own_xg=1.8)
+    assert packed["match_xg"] > packed["match_xga"]
+    assert packed["p_cs"] == packed["p_cs"]
 

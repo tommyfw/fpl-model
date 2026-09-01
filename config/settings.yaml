@@ -23,14 +23,16 @@ dampen_unused_minutes: true
 # Blend current-season team xG with prior-season rates.
 # Promoted clubs (no PL row last year) shrink toward this quantile of last year's PL
 # (0.25 = bottom quartile on attack and on defence; returning clubs keep their own rates).
-team_prior_matches: 8
+team_prior_matches: 12
 promoted_prior_quantile: 0.25
 # Players on promoted clubs with no FPL prior shrink toward this × position mean.
 promoted_player_prior_scale: 0.78
-# Pseudo-matches of last-season home/away xG. Venue rates shrink toward that
-# (promoted clubs → last year's PL venue quantile). Keep high early season so
-# one freak home clean sheet (~0.3 xGA) cannot dominate the blend.
+# Pseudo-matches for the venue split. Observed home/away xG is mixed with
+# this-season overall (plus a light last-season venue tilt). Keep high early
+# so one freak home clean sheet cannot dominate CS chips.
 venue_prior_matches: 10
+# Pseudo-starts of DefCon prior (last-season hit rate, else FBref CBIT proxy).
+defcon_prior_matches: 6
 defcon_threshold:
   DEF: 10
   MID: 12

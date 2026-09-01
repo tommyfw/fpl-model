@@ -8,27 +8,24 @@
 
 overall:
   yaml_as_is: null
+  more_m_mild: {boost: M, by: 0.04}
   more_m: {boost: M, by: 0.08}
-  less_m: {boost: M, by: -0.08}
-  more_q: {boost: Q, by: 0.08}
-  more_o: {boost: O, by: 0.08}
+  less_m: {boost: M, by: -0.04}
 
 quality:
   yaml_as_is: null
-  more_u: {boost: U, by: 0.08}
+  more_f_mild: {boost: F, by: 0.04}
   more_f: {boost: F, by: 0.08}
+  more_u: {boost: U, by: 0.04}
 
 # Added to live xpts: values (not replacements). Other keys stay.
 xpts:
   yaml_as_is: null
-  more_l5: {start_l5: 0.15}
-  less_l5: {start_l5: -0.15}
-  mild_fixtures: {fixture_lo: 0.06, fixture_hi: -0.10}
-  hot_fixtures: {fixture_lo: -0.12, fixture_hi: 0.18}
-  cs_up: {cs_scale: 0.15}
-  cs_down: {cs_scale: -0.15}
-  bonus_up: {bonus_scale: 0.20, bps_scale: 0.06}
-  residual_up: {p90_residual: 0.08, p90_residual_def: 0.04}
+  more_l5: {start_l5: 0.08}
+  less_l5: {start_l5: -0.08}
+  cs_up: {cs_scale: 0.08}
+  cs_down: {cs_scale: -0.08}
+  fwd_mild: {fwd_attack_scale: 0.05}
   fwd_hot: {fwd_attack_scale: 0.10}
 
 # Final mix pick: 0.7 Spearman + 0.3 Top-20, mean over positions, then seasons.

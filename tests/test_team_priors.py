@@ -62,10 +62,11 @@ def test_venue_uses_last_season_when_no_games_this_year():
         index=pd.Index([1, 2], name="team_id"),
     )
     ah, aa, dh, da = _venue_strength(pd.DataFrame(), season_atk, season_de, 4, priors)
-    assert abs(float(ah.loc[1]) - 1.8) < 1e-9
-    assert abs(float(aa.loc[1]) - 1.1) < 1e-9
-    assert abs(float(dh.loc[2]) - -1.5) < 1e-9
-    assert abs(float(da.loc[2]) - -1.9) < 1e-9
+    # n=0 → mix this-season overall with last-season venue
+    assert abs(float(ah.loc[1]) - (0.65 * 1.5 + 0.35 * 1.8)) < 1e-9
+    assert abs(float(aa.loc[1]) - (0.65 * 1.5 + 0.35 * 1.1)) < 1e-9
+    assert abs(float(dh.loc[2]) - (0.65 * -1.3 + 0.35 * -1.5)) < 1e-9
+    assert abs(float(da.loc[2]) - (0.65 * -1.3 + 0.35 * -1.9)) < 1e-9
 
 
 def test_one_home_game_shrinks_toward_venue_prior():
@@ -90,10 +91,39 @@ def test_one_home_game_shrinks_toward_venue_prior():
         index=pd.Index([1], name="team_id"),
     )
     ah, aa, dh, da = _venue_strength(ut, season_atk, season_de, 4, priors)
-    # n=1, prior_n=4 → 0.2 observed + 0.8 prior
-    assert abs(float(ah.loc[1]) - (0.2 * 3.0 + 0.8 * 1.8)) < 1e-9
-    assert abs(float(dh.loc[1]) - (0.2 * -0.2 + 0.8 * -1.0)) < 1e-9
-    assert abs(float(aa.loc[1]) - 1.1) < 1e-9
+    # n=1, prior_n=4 → 0.2 observed + 0.8 mix(season, last-season venue)
+    base_h = 0.65 * 1.5 + 0.35 * 1.8
+    assert abs(float(ah.loc[1]) - (0.2 * 3.0 + 0.8 * base_h)) < 1e-9
+    base_dh = 0.65 * -1.2 + 0.35 * -1.0
+    assert abs(float(dh.loc[1]) - (0.2 * -0.2 + 0.8 * base_dh)) < 1e-9
+    assert abs(float(aa.loc[1]) - (0.65 * 1.5 + 0.35 * 1.1)) < 1e-9
+
+
+def test_one_home_game_is_closer_to_season_than_raw_venue():
+    ut = pd.DataFrame(
+        {
+            "team_id": [1],
+            "is_home": [1],
+            "match_id": [99],
+            "xg_for": [3.0],
+            "xg_against": [0.2],
+        }
+    )
+    season_atk = pd.Series({1: 1.5})
+    season_de = pd.Series({1: -1.2})
+    priors = pd.DataFrame(
+        {
+            "prior_attack_home": [1.8],
+            "prior_attack_away": [1.1],
+            "prior_defence_home": [-1.0],
+            "prior_defence_away": [-1.6],
+        },
+        index=pd.Index([1], name="team_id"),
+    )
+    ah, _, dh, _ = _venue_strength(ut, season_atk, season_de, 8, priors)
+    assert abs(float(ah.loc[1]) - 3.0) > 1.0
+    assert float(dh.loc[1]) < -0.4
+    assert abs(float(dh.loc[1]) - (-0.2)) > 0.4
 
 
 def test_load_team_priors_marks_promoted_when_db_present():

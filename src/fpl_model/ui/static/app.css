@@ -44,7 +44,7 @@ button, select, input { font: inherit; color: inherit; }
   border-radius: 8px;
   padding: 0.45rem 0.65rem;
 }
-.row-filters { padding: 0.75rem 1.5rem 0; }
+.row-filters { padding: 0.75rem 1.5rem 0; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
 .row-filters input { min-width: 14rem; }
 
 .pills { display: flex; gap: 0.4rem; padding: 0.7rem 1.5rem 0; flex-wrap: wrap; }
@@ -220,7 +220,14 @@ button.ghost {
 .fx-chip.easy { background: #163628; border-color: #2f6b54; color: var(--buy); }
 .fx-chip.mid { background: #2a2614; border-color: #6b5a2f; color: var(--hold); }
 .fx-chip.hard { background: #3a1c1c; border-color: #6b2f2f; color: var(--avoid); }
-.fx-chip.blank { opacity: 0.55; }
+.fx-chip.thin { outline: 1px dashed #6b5a2f; }
+.fx-chip .n { color: var(--muted); font-size: 0.62rem; display: block; }
+.chip.risk { border-color: #c04040; }
+.chip.watch { border-color: #c9a227; }
+.badge.risk { background: #3a1c1c; color: #ff7a7a; }
+.badge.watch { background: #2a2614; color: var(--hold); }
+.calibrate-table { font-size: 0.78rem; border-collapse: collapse; margin: 0.4rem 0 0.8rem; }
+.calibrate-table th, .calibrate-table td { padding: 0.25rem 0.5rem; text-align: left; border-bottom: 1px solid #1a2330; }
 .fixture-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
 .fixture-table th, .fixture-table td {
   border-bottom: 1px solid #1a2330;
@@ -264,7 +271,18 @@ button.ghost {
   min-width: 7.5rem;
   cursor: pointer;
 }
-.chip.blank { opacity: 0.55; }
+.row.banned { opacity: 0.55; }
+.xi-exclude {
+  padding: 0.65rem 1.2rem 0;
+}
+.xi-exclude h3 { margin: 0 0 0.4rem; font-size: 0.85rem; }
+.xi-exclude .empty { padding: 0 0 0.5rem; }
+.chip.excluded { border-color: #5a2a1c; }
+.chip.keep { border-color: #2f6b54; }
+.chip.out { border-color: #c9a227; }
+.xfer-cands { margin-top: 0.45rem; display: flex; flex-direction: column; gap: 0.3rem; }
+.xfer-cand { display: flex; gap: 0.5rem; align-items: center; font-size: 0.78rem; color: var(--muted); }
+.xfer-cand button { flex: 0 0 auto; }
 .chip .nm { font-weight: 650; font-size: 0.85rem; }
 .chip .dt { color: var(--muted); font-size: 0.72rem; margin-top: 0.15rem; }
 .pos-block { margin-bottom: 0.85rem; }

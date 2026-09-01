@@ -44,7 +44,7 @@ GW_COLS = {
     "creativity": "creativity",
     "influence": "influence",
     "ict_index": "ict_index",
-    "kickoff_time": "kickoff_time",
+    "xP": "xp",
 }
 
 
@@ -214,6 +214,7 @@ def load_season(season: str, settings: Settings | None = None, skip_understat: b
         "creativity",
         "influence",
         "ict_index",
+        "xp",
     ]:
         out[c] = pd.to_numeric(out[c], errors="coerce")
     out["was_home"] = out["was_home"].map(lambda x: 1 if str(x).lower() in {"true", "1"} else (0 if str(x).lower() in {"false", "0"} else pd.NA))

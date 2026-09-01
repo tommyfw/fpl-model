@@ -22,6 +22,16 @@ def test_horizon_weights_stretch_to_ten():
 
 
 
+def test_shrink_accepts_per_row_prior_minutes():
+    rate = pd.Series([1.0, 1.0])
+    minutes = pd.Series([180.0, 180.0])
+    prior = 0.1
+    light = shrink_to_mean(rate, minutes, prior, 450)
+    heavy = shrink_to_mean(rate, minutes, prior, pd.Series([950.0, 450.0]))
+    assert heavy.iloc[0] < light.iloc[0]
+    assert abs(heavy.iloc[1] - light.iloc[1]) < 1e-9
+
+
 def test_per90_and_shrink_towards_prior_with_few_minutes():
     rate = pd.Series(per90(pd.Series([2.0, 0.0]), pd.Series([90.0, 0.0])))
     shrunk = shrink_to_mean(rate, pd.Series([90.0, 0.0]), prior_mean=0.4, prior_minutes=450)

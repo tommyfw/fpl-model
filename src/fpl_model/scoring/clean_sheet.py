@@ -9,6 +9,8 @@ import numpy as np
 # edge; 0.88/1.12 on top of that made away CS ~3× worse than home.
 HOME_CONCEDE = 0.97
 AWAY_CONCEDE = 1.03
+HOME_ATTACK = 1.03
+AWAY_ATTACK = 0.97
 DEFAULT_LEAGUE_XG = 1.35
 LAMBDA_MIN = 0.35
 LAMBDA_MAX = 2.9
@@ -31,8 +33,32 @@ def expected_goals_against(
     return float(np.clip(own * (opp / league) * ha, LAMBDA_MIN, LAMBDA_MAX))
 
 
-def p_cs_from_lambda(lam: float) -> float:
-    return float(np.clip(np.exp(-float(lam)), PCS_MIN, PCS_MAX))
+def expected_goals_for(
+    own_xg: float,
+    opp_leak: float,
+    *,
+    home: bool,
+    league_xg: float = DEFAULT_LEAGUE_XG,
+) -> float:
+    """This team's expected goals vs this opponent in one match."""
+    own = float(np.clip(own_xg if np.isfinite(own_xg) else league_xg, 0.4, 2.8))
+    leak = float(np.clip(opp_leak if np.isfinite(opp_leak) else league_xg, 0.45, 2.6))
+    league = float(league_xg) if np.isfinite(league_xg) and league_xg > 0.6 else DEFAULT_LEAGUE_XG
+    ha = HOME_ATTACK if home else AWAY_ATTACK
+    return float(np.clip(own * (leak / league) * ha, LAMBDA_MIN, LAMBDA_MAX))
+
+
+DC_RHO = 0.10
+
+
+def dixon_coles_p_cs(lam_against: float, lam_for: float, rho: float = DC_RHO) -> float:
+    """P(concede 0) with Dixon–Coles dependence on own goals (rho=0 → Poisson)."""
+    mu = float(np.clip(lam_against, LAMBDA_MIN, LAMBDA_MAX))
+    lam = float(np.clip(lam_for, LAMBDA_MIN, LAMBDA_MAX))
+    r = float(rho) if np.isfinite(rho) else 0.0
+    indep = np.exp(-mu)
+    adj = 1.0 + lam * r * np.exp(-lam) * (lam - mu)
+    return float(np.clip(indep * adj, PCS_MIN, PCS_MAX))
 
 
 def fixture_p_cs(
@@ -41,8 +67,14 @@ def fixture_p_cs(
     *,
     home: bool,
     league_xg: float = DEFAULT_LEAGUE_XG,
+    own_xg: float | None = None,
+    opp_leak: float | None = None,
 ) -> float:
-    return p_cs_from_lambda(expected_goals_against(own_xga, opp_xg, home=home, league_xg=league_xg))
+    lam_ag = expected_goals_against(own_xga, opp_xg, home=home, league_xg=league_xg)
+    leak = opp_leak if opp_leak is not None else league_xg
+    oxg = own_xg if own_xg is not None else league_xg
+    lam_for = expected_goals_for(oxg, leak, home=home, league_xg=league_xg)
+    return dixon_coles_p_cs(lam_ag, lam_for)
 
 
 def team_xg_context_score(
@@ -152,6 +184,7 @@ ATTACK_FDR_CUTS = (1.22, 1.35, 1.48, 1.65)
 PCS_HARD = 0.18
 PCS_EASY = 0.30
 PCS_FDR_CUTS = (0.18, 0.24, 0.30, 0.38)
+VENUE_THIN_N = 6
 
 
 def ease_band(value: float, lo: float, hi: float, *, higher_is_easier: bool = True) -> str:
@@ -222,15 +255,44 @@ def pack_fixture(
     own = float(own_xga) if np.isfinite(own_xga) else league_xg
     oxg = float(own_xg) if own_xg is not None and np.isfinite(own_xg) else league_xg
     tilt = float(team_tilt) if team_tilt is not None and np.isfinite(team_tilt) else None
+    match_xga = expected_goals_against(own, att, home=home, league_xg=league_xg)
+    match_xg = expected_goals_for(oxg, leak, home=home, league_xg=league_xg)
     return {
         "home": 1.0 if home else 0.0,
         "opp_attack": att,
         "opp_defence_leak": leak,
         "own_xga": own,
         "own_xg": oxg,
+        "match_xg": match_xg,
+        "match_xga": match_xga,
         "team_xg_context": team_xg_context_score(oxg, own, league_xg, position=position, team_tilt=tilt),
-        "p_cs": fixture_p_cs(own, att, home=home, league_xg=league_xg),
+        "p_cs": dixon_coles_p_cs(match_xga, match_xg),
     }
+
+
+def isolate_first_event(fixtures_json: Any) -> str:
+    """Keep only the earliest GW in the packed fixture window (for next-GW xPts)."""
+    by = parse_fixtures_json(fixtures_json)
+    if not by:
+        return "{}"
+    return isolate_event(fixtures_json, min(int(k) for k in by.keys()))
+
+
+def blank_events(fixtures_json: Any, horizon: int) -> list[int]:
+    """Event numbers in the scoring window with no matches (blanks)."""
+    by = parse_fixtures_json(fixtures_json)
+    if not by:
+        return []
+    events = sorted(int(k) for k in by.keys())
+    if not events:
+        return []
+    min_e = min(events)
+    blanks = []
+    for i in range(horizon):
+        ev = min_e + i
+        if not by.get(str(ev)):
+            blanks.append(ev)
+    return blanks
 
 
 def isolate_event(fixtures_json: Any, event: int) -> str:

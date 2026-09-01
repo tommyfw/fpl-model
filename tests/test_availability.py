@@ -3,7 +3,11 @@ import json
 import pandas as pd
 
 from fpl_model.config import load_settings, load_weights
-from fpl_model.scoring.availability import availability_from_news
+from fpl_model.scoring.availability import (
+    availability_from_news,
+    availability_horizon_mean,
+    availability_later,
+)
 from fpl_model.scoring.engine import score_feature_frame
 
 
@@ -13,6 +17,31 @@ def test_news_out_is_almost_unavailable():
     assert availability_from_news("d", chance_this=25, news="Doubtful") == 0.25
     assert availability_from_news("a") == 1.0
     assert availability_from_news("a", chance_this=75) == 0.75
+
+
+def test_horizon_recovers_from_short_ban_and_doubt():
+    this, later, mean = availability_horizon_mean(
+        "s", news="One-match ban", horizon=5
+    )
+    assert this < 0.4
+    assert later > 0.8
+    assert mean > this
+    d_this = availability_from_news("d", chance_this=25, news="Doubtful")
+    d_later = availability_later("d", chance_this=25, news="Doubtful", this_gw=d_this)
+    assert d_later > d_this
+
+
+def test_minutes_risk_flags_news_rotation_and_unused():
+    from fpl_model.scoring.availability import minutes_risk
+
+    out = minutes_risk(availability=0.1, status="i", news="Hamstring")
+    assert out["level"] == "risk"
+    rot = minutes_risk(availability=1.0, status="a", position="MID", pos_slot_rank=5)
+    assert rot["level"] == "risk"
+    assert "rotation risk" in rot["labels"]
+    fresh = minutes_risk(availability=1.0, status="a", minutes=0, appearances=0)
+    assert fresh["level"] == "watch"
+    assert any("new" in x for x in fresh["labels"])
 
 
 def test_injured_starter_minutes_are_capped():
@@ -53,6 +82,8 @@ def test_injured_starter_minutes_are_capped():
     scored = score_feature_frame(df, weights, settings)
     assert scored.loc[1, "M"] < scored.loc[0, "M"] - 20
     assert scored.loc[1, "M"] < 40
+    assert scored.loc[1, "action"] in {"HOLD", "AVOID"}
+    assert scored.loc[1, "O"] < scored.loc[0, "O"]
 
 
 def test_fixture_o_uses_team_xg_context():

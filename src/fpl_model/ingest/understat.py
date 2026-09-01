@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
-
 from collections import defaultdict
+from pathlib import Path
+from typing import Any
 
 import httpx
 import pandas as pd
@@ -275,6 +275,48 @@ def build_and_store_map(conn, season: str, league: dict) -> pd.DataFrame:
     mapping.to_sql("map_player_ids", conn, if_exists="append", index=False)
     conn.commit()
     return mapping
+
+
+def map_coverage_summary(conn, season: str) -> dict[str, Any]:
+    """Understat↔FPL coverage counts for CLI / update hygiene."""
+    rows = pd.read_sql_query(
+        """
+        SELECT match_method, COUNT(*) AS n
+        FROM map_player_ids
+        WHERE season = ?
+        GROUP BY match_method
+        """,
+        conn,
+        params=(season,),
+    )
+    by = {str(r["match_method"]): int(r["n"]) for _, r in rows.iterrows()} if not rows.empty else {}
+    n_fpl = int(
+        pd.read_sql_query(
+            "SELECT COUNT(*) AS n FROM dim_player WHERE season = ?",
+            conn,
+            params=(season,),
+        )["n"].iloc[0]
+    )
+    matched = sum(v for k, v in by.items() if k not in {"unmatched_fpl", "unmatched_understat"})
+    # Rows with both ids set
+    both = pd.read_sql_query(
+        """
+        SELECT COUNT(*) AS n FROM map_player_ids
+        WHERE season = ? AND fpl_id IS NOT NULL AND understat_id IS NOT NULL
+        """,
+        conn,
+        params=(season,),
+    )["n"].iloc[0]
+    unmatched_fpl = int(by.get("unmatched_fpl", 0))
+    return {
+        "season": season,
+        "fpl_players": n_fpl,
+        "matched": int(both),
+        "matched_pct": round(100.0 * float(both) / n_fpl, 1) if n_fpl else 0.0,
+        "unmatched_fpl": unmatched_fpl,
+        "unmatched_understat": int(by.get("unmatched_understat", 0)),
+        "by_method": by,
+    }
 
 
 def write_id_map_review(conn, season: str, path: Path | None = None) -> Path:

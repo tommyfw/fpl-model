@@ -12,8 +12,9 @@ from fpl_model.db import connect
 from fpl_model.features.rotation import competing_start_rates
 from fpl_model.features.stats import blend_playing_time, per90, shrink_to_mean
 from fpl_model.ingest.priors import load_player_priors, load_team_priors
-from fpl_model.scoring.availability import availability_from_news
+from fpl_model.scoring.availability import availability_horizon_mean
 from fpl_model.scoring.clean_sheet import horizon_p_cs, pack_match_for_team
+from fpl_model.ingest.priors import previous_season
 from fpl_model.scoring.role import (
     def_fb_share,
     defcon_count,
@@ -147,7 +148,12 @@ def _apply_understat(
                 raw = pd.Series(per90(g.loc[idx, src], minutes), index=idx).astype(float)
                 if obs_dest:
                     out.loc[idx, obs_dest] = raw
-                pos_mean = float(raw.mean()) if raw.notna().any() else 0.0
+                pos = out.loc[idx, "position"] if "position" in out.columns else None
+                if pos is not None and pos.notna().any():
+                    pos_mean = raw.groupby(pos).transform("mean")
+                    pos_mean = pos_mean.fillna(float(raw.mean()) if raw.notna().any() else 0.0)
+                else:
+                    pos_mean = float(raw.mean()) if raw.notna().any() else 0.0
                 out.loc[idx, dest] = shrink_to_mean(
                     raw, minutes, pos_mean, prior, max_prior_weight=settings.max_prior_weight
                 ).astype(float)
@@ -211,19 +217,23 @@ def _apply_understat(
         priors = load_team_priors(conn, season, promoted_quantile=q)
         atk, de = _blend_team_strength(conn, season, atk, de, n_obs, settings, priors=priors)
         min_venue = int(getattr(settings, "venue_prior_matches", 4))
+        ut_v = ut if not ut.empty else pd.DataFrame()
         atk_h, atk_a, de_h, de_a = _venue_strength(
-            ut if not ut.empty else pd.DataFrame(),
+            ut_v,
             atk,
             de,
             min_venue,
             priors=priors,
         )
+        n_home, n_away = _venue_match_counts(ut_v)
         out["team_attack"] = out["team_id"].map(atk).fillna(out.get("team_attack"))
         out["team_defence"] = out["team_id"].map(de).fillna(out.get("team_defence"))
         out["team_attack_home"] = out["team_id"].map(atk_h).fillna(out["team_attack"])
         out["team_attack_away"] = out["team_id"].map(atk_a).fillna(out["team_attack"])
         out["team_defence_home"] = out["team_id"].map(de_h).fillna(out["team_defence"])
         out["team_defence_away"] = out["team_id"].map(de_a).fillna(out["team_defence"])
+        out["venue_n_home"] = out["team_id"].map(n_home).fillna(0.0)
+        out["venue_n_away"] = out["team_id"].map(n_away).fillna(0.0)
         out["p_clean_sheet"] = _cs_rate((-out["team_defence"]).clip(lower=0.05))
     if "team_attack_trend" not in out.columns:
         out["team_attack_trend"] = 0.0
@@ -284,6 +294,39 @@ def _cs_rate(ga90: pd.Series) -> pd.Series:
     return np.exp(-lam)
 
 
+# Pull venue rates toward this-season overall so n=1 home/away splits
+# cannot dominate CS chips (last-season venue is only a light tilt).
+VENUE_SEASON_MIX = 0.65
+
+
+def _venue_match_counts(ut: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    empty = pd.Series(dtype=float)
+    if ut is None or ut.empty or "team_id" not in ut.columns or "is_home" not in ut.columns:
+        return empty, empty
+    u = ut.dropna(subset=["team_id"]).copy()
+    u["team_id"] = pd.to_numeric(u["team_id"], errors="coerce")
+    u = u.dropna(subset=["team_id"])
+    if u.empty:
+        return empty, empty
+    u["team_id"] = u["team_id"].astype(int)
+    u["is_home"] = pd.to_numeric(u["is_home"], errors="coerce").fillna(0).astype(int)
+    n_col = "match_id" if "match_id" in u.columns else "xg_for"
+    g = u.groupby(["team_id", "is_home"], as_index=True).agg(
+        n=(n_col, "nunique" if n_col == "match_id" else "count")
+    )
+    if g.empty:
+        return empty, empty
+    home = pd.Series(dtype=float)
+    away = pd.Series(dtype=float)
+    for (tid, is_home), row in g.iterrows():
+        n = float(row["n"])
+        if int(is_home) == 1:
+            home.loc[int(tid)] = n
+        else:
+            away.loc[int(tid)] = n
+    return home, away
+
+
 def _venue_strength(
     ut: pd.DataFrame,
     season_atk: pd.Series,
@@ -291,10 +334,10 @@ def _venue_strength(
     min_n: int,
     priors: pd.DataFrame | None = None,
 ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
-    """Home/away xG for and −xGA, shrunk toward last-season venue rates.
+    """Home/away xG for and −xGA, shrunk toward this-season overall.
 
-    Until a club has many home (or away) games this year, last season's
-    home/away xG is the prior (promoted clubs use last year's PL quantile).
+    Last-season venue rates only tilt the prior. Until a club has many
+    home (or away) games this year, one freak venue result cannot dominate.
     """
     prior_n = max(int(min_n), 1)
     ids = season_atk.index.union(season_de.index)
@@ -346,18 +389,26 @@ def _venue_strength(
         for tid in ids:
             n = _obs_n(tid, is_home)
             prior = _prior(tid, prior_col, season)
+            season_v = float(season.loc[tid]) if tid in season.index and pd.notna(season.loc[tid]) else float("nan")
+            if np.isfinite(prior) and np.isfinite(season_v):
+                base = VENUE_SEASON_MIX * season_v + (1.0 - VENUE_SEASON_MIX) * prior
+            elif np.isfinite(season_v):
+                base = season_v
+            else:
+                base = prior
             obs = float("nan")
             if n > 0:
                 try:
                     obs = float(venue.loc[(tid, is_home)])
                 except (KeyError, TypeError):
                     obs = float("nan")
-            if np.isfinite(obs) and n > 0:
-                base = prior if np.isfinite(prior) else (float(season.loc[tid]) if tid in season.index else obs)
+            if np.isfinite(obs) and n > 0 and np.isfinite(base):
                 w = n / (n + prior_n)
                 out.loc[tid] = w * obs + (1.0 - w) * base
-            elif np.isfinite(prior):
-                out.loc[tid] = prior
+            elif np.isfinite(base):
+                out.loc[tid] = base
+            elif np.isfinite(obs):
+                out.loc[tid] = obs
         return out
 
     atk_h = _blend(1, season_atk, atk, "prior_attack_home")
@@ -433,7 +484,11 @@ def _attach_rest(
             rf = float(np.clip(hours / 96.0, 0.82, 1.0))
         if n8 >= 2:
             rf = min(rf, 0.90)
-        out.at[fid, "rest_factor"] = rf
+        if n8 >= 3:
+            rf = min(rf, 0.82)
+        if np.isfinite(hours) and hours < 72:
+            rf = min(rf, 0.86)
+        out.at[fid, "rest_factor"] = float(np.clip(rf, 0.75, 1.0))
     return out
 
 
@@ -513,6 +568,81 @@ def _defcon_hits(past: pd.DataFrame, thresholds: dict) -> pd.Series:
     return ((counts >= thr) & started).astype(int)
 
 
+def _defcon_season_priors(
+    conn: sqlite3.Connection,
+    season: str,
+    thresholds: dict,
+    index: pd.Index,
+) -> pd.Series:
+    """Last-season DefCon hit rate keyed by this season's fpl_id (via FPL code)."""
+    prev = previous_season(season)
+    codes = pd.read_sql_query(
+        "SELECT fpl_id, code FROM dim_player WHERE season = ? AND code IS NOT NULL",
+        conn,
+        params=(season,),
+    )
+    prev_players = pd.read_sql_query(
+        "SELECT fpl_id, code, position FROM dim_player WHERE season = ? AND code IS NOT NULL",
+        conn,
+        params=(prev,),
+    )
+    if codes.empty or prev_players.empty:
+        return pd.Series(np.nan, index=index)
+    try:
+        gw = pd.read_sql_query(
+            """
+            SELECT fpl_id, position, starts, clearances_blocks_interceptions, tackles, recoveries,
+                   defensive_contribution
+            FROM fact_fpl_player_gw
+            WHERE season = ? AND starts >= 1
+            """,
+            conn,
+            params=(prev,),
+        )
+    except Exception:
+        return pd.Series(np.nan, index=index)
+    if gw.empty:
+        return pd.Series(np.nan, index=index)
+    gw = gw.merge(prev_players[["fpl_id", "code"]], on="fpl_id", how="left")
+    gw = gw.dropna(subset=["code"])
+    if "position" not in gw.columns or gw["position"].isna().all():
+        gw["position"] = gw["fpl_id"].map(prev_players.set_index("fpl_id")["position"])
+    gw["defcon_hit"] = _defcon_hits(gw, thresholds)
+    by_code = gw.groupby("code")["defcon_hit"].mean()
+    link = codes.set_index("fpl_id")["code"].map(by_code)
+    return link.reindex(index)
+
+
+def _blend_defcon_hit_rate(
+    out: pd.DataFrame,
+    n_starts: pd.Series,
+    *,
+    season_prior: pd.Series,
+    prior_n: int,
+    thresholds: dict,
+) -> pd.Series:
+    """Shrink observed DefCon hit rate toward last-season / FBref CBIT prior."""
+    obs = pd.to_numeric(out["defcon_hit_rate"], errors="coerce").fillna(0.0)
+    n = n_starts.reindex(out.index).fillna(0.0).astype(float)
+    prior = season_prior.reindex(out.index)
+    # FBref CBIT/90 → rough P(hit) when last-season rate missing
+    if "fbref_cbit90" in out.columns:
+        cbit = pd.to_numeric(out["fbref_cbit90"], errors="coerce")
+        thr = out["position"].map(lambda p: thresholds.get(p) if p in thresholds else None)
+        thr_n = pd.to_numeric(thr, errors="coerce")
+        fb = (cbit / (thr_n + 2.0)).clip(0.05, 0.85)
+        prior = prior.where(prior.notna(), fb)
+    prior = prior.fillna(0.0).clip(0.0, 1.0)
+    pn = max(int(prior_n), 1)
+    w = n / (n + pn)
+    # No prior signal and no starts → stay at observed 0
+    has_prior = season_prior.reindex(out.index).notna()
+    if "fbref_cbit90" in out.columns:
+        has_prior = has_prior | pd.to_numeric(out["fbref_cbit90"], errors="coerce").notna()
+    blended = w * obs + (1.0 - w) * prior
+    return pd.Series(np.where(has_prior | (n > 0), blended, obs), index=out.index).clip(0.0, 1.0)
+
+
 def build_features_for_asof(
     conn: sqlite3.Connection,
     season: str,
@@ -566,6 +696,12 @@ def build_features_for_asof(
             pd.to_numeric(past["starts"], errors="coerce").fillna(0),
             (past["minutes"] >= 60).astype(int),
         )
+        if "yellow_cards" not in past.columns:
+            past["yellow_cards"] = 0
+        if "red_cards" not in past.columns:
+            past["red_cards"] = 0
+        past["yellow_cards"] = pd.to_numeric(past["yellow_cards"], errors="coerce").fillna(0)
+        past["red_cards"] = pd.to_numeric(past["red_cards"], errors="coerce").fillna(0)
         past_n = past.groupby("fpl_id", as_index=False).agg(
             minutes=("minutes", "sum"),
             starts=("starts", "sum"),
@@ -583,6 +719,8 @@ def build_features_for_asof(
             xgc=("expected_goals_conceded", "sum"),
             threat=("threat", "sum"),
             creativity=("creativity", "sum"),
+            yellows=("yellow_cards", "sum"),
+            reds=("red_cards", "sum"),
             appearances=("round", "nunique"),
         )
         past_sorted = past.sort_values(["fpl_id", "round"])
@@ -598,6 +736,10 @@ def build_features_for_asof(
         last10_starts = _window_sum(past, 10, "starts")
         meta = players.set_index("fpl_id")
         out = past_n.set_index("fpl_id")
+        if "yellows" not in out.columns:
+            out["yellows"] = 0
+        if "reds" not in out.columns:
+            out["reds"] = 0
         for c in [
             "position",
             "team_id",
@@ -631,6 +773,8 @@ def build_features_for_asof(
             "xgc",
             "threat",
             "creativity",
+            "yellows",
+            "reds",
             "appearances",
         ]:
             out[c] = 0
@@ -659,6 +803,8 @@ def build_features_for_asof(
             "xgc",
             "threat",
             "creativity",
+            "yellows",
+            "reds",
             "appearances",
         ]:
             extra[c] = 0
@@ -733,6 +879,7 @@ def build_features_for_asof(
         ("saves90", "saves"),
         ("threat90", "threat"),
         ("creativity90", "creativity"),
+        ("yellow90", "yellows"),
     ]:
         raw = pd.Series(per90(out[src], out["minutes"]), index=out.index)
         pos_mean = raw.groupby(out["position"]).transform("mean")
@@ -746,8 +893,16 @@ def build_features_for_asof(
             blend = pos_mean
         if col in attack_prior_cols:
             blend = pd.Series(blend, index=out.index).where(~weak_prior, pos_mean * promo_scale)
+        n_m = pd.to_numeric(out["matches"], errors="coerce").fillna(0) if "matches" in out.columns else 0
+        extra = pd.Series(0.0, index=out.index)
+        if col in attack_prior_cols:
+            extra = np.where((n_m < 8) & out["position"].isin(["DEF", "GK"]), 500.0, 0.0)
+            extra = extra + np.where((n_m < 8) & out["position"].isin(["MID", "FWD"]), 300.0, 0.0)
+        elif col == "saves90":
+            extra = np.where((n_m < 8) & out["position"].eq("GK"), 500.0, 0.0)
+        prior_m = pd.Series(float(prior), index=out.index) + extra
         out[col] = shrink_to_mean(
-            raw, out["minutes"], blend, prior, max_prior_weight=settings.max_prior_weight
+            raw, out["minutes"], blend, prior_m, max_prior_weight=settings.max_prior_weight
         )
 
     if not player_priors.empty:
@@ -774,11 +929,13 @@ def build_features_for_asof(
         + form_w[2] * (out["points"] / out["matches_available"])
     )
 
+    n_defcon_starts = pd.Series(0.0, index=out.index)
     if not past.empty:
         past = past.copy()
         past["defcon_hit"] = _defcon_hits(past, settings.defcon_threshold)
         started = past.loc[past["starts"] >= 1]
         hit_rate = started.groupby("fpl_id")["defcon_hit"].mean()
+        n_defcon_starts = started.groupby("fpl_id").size().astype(float)
         out["defcon_hit_rate"] = hit_rate.reindex(out.index).fillna(0.0)
     else:
         out["defcon_hit_rate"] = 0.0
@@ -809,6 +966,14 @@ def build_features_for_asof(
     from fpl_model.ingest.fbref import attach_fbref
 
     out = attach_fbref(conn, season, out)
+    season_defcon = _defcon_season_priors(conn, season, settings.defcon_threshold, out.index)
+    out["defcon_hit_rate"] = _blend_defcon_hit_rate(
+        out,
+        n_defcon_starts,
+        season_prior=season_defcon,
+        prior_n=int(getattr(settings, "defcon_prior_matches", 6)),
+        thresholds=settings.defcon_threshold,
+    )
     if "rest_factor" not in out.columns:
         out["rest_factor"] = 1.0
     if "gc" not in out.columns:
@@ -823,20 +988,38 @@ def build_features_for_asof(
     out["price"] = out["last_value"] / 10.0
     price_delta = _price_change(past_sorted)
     out["price_change"] = price_delta.reindex(out.index).fillna(0.0)
-    out["availability"] = [
-        availability_from_news(
-            st,
-            chance_this=ct,
-            chance_next=cn,
-            news=nw,
+    last_red = pd.Series(False, index=out.index)
+    if not past_sorted.empty and "red_cards" in past_sorted.columns:
+        last_gw = past_sorted.sort_values(["fpl_id", "round"]).groupby("fpl_id").tail(1)
+        last_red = (
+            (pd.to_numeric(last_gw.set_index("fpl_id")["red_cards"], errors="coerce").fillna(0) >= 1)
+            .reindex(out.index)
+            .fillna(False)
         )
-        for st, ct, cn, nw in zip(
-            out["status"] if "status" in out.columns else [None] * len(out),
-            out["chance_of_playing_this"] if "chance_of_playing_this" in out.columns else [None] * len(out),
-            out["chance_of_playing_next"] if "chance_of_playing_next" in out.columns else [None] * len(out),
-            out["news"] if "news" in out.columns else [None] * len(out),
+    out["last_red"] = last_red.astype(bool)
+    if "yellows" not in out.columns:
+        out["yellows"] = 0
+    if "yellow90" not in out.columns:
+        out["yellow90"] = 0.0
+    avail_this = []
+    avail_later = []
+    avail_hz = []
+    for st, ct, cn, nw, lr in zip(
+        out["status"] if "status" in out.columns else [None] * len(out),
+        out["chance_of_playing_this"] if "chance_of_playing_this" in out.columns else [None] * len(out),
+        out["chance_of_playing_next"] if "chance_of_playing_next" in out.columns else [None] * len(out),
+        out["news"] if "news" in out.columns else [None] * len(out),
+        out["last_red"],
+    ):
+        a0, a1, am = availability_horizon_mean(
+            st, chance_this=ct, chance_next=cn, news=nw, horizon=settings.horizon_gws, last_red=lr
         )
-    ]
+        avail_this.append(a0)
+        avail_later.append(a1)
+        avail_hz.append(am)
+    out["availability"] = avail_this
+    out["availability_later"] = avail_later
+    out["availability_horizon"] = avail_hz
     out["pen_taker"] = (out["penalties_order"] == 1).astype(float)
     out["set_piece_taker"] = (
         (out["corners_order"].fillna(99) <= 2) | (out["direct_fk_order"].fillna(99) <= 2)
@@ -854,6 +1037,14 @@ def build_features_for_asof(
     if "psxg_net90" in out.columns:
         gk = out["position"].eq("GK") & out["psxg_net90"].notna()
         out.loc[gk, "shot_stopping"] = pd.to_numeric(out.loc[gk, "psxg_net90"], errors="coerce")
+    # Early-season GK shot-stopping is noisy — shrink toward 0 (league-average stop) until minutes accrue.
+    gk_mask = out["position"].eq("GK")
+    if gk_mask.any():
+        ss = pd.to_numeric(out.loc[gk_mask, "shot_stopping"], errors="coerce")
+        gk_min = pd.to_numeric(out.loc[gk_mask, "minutes"], errors="coerce").fillna(0.0)
+        prior_m = float(getattr(settings, "shrink_prior_minutes", 450))
+        w = (gk_min / (gk_min + prior_m)).clip(0.0, 1.0)
+        out.loc[gk_mask, "shot_stopping"] = (w * ss.fillna(0.0)).astype(float)
     out["pen_score"] = out["penalties_order"].map(penalty_score)
     out["sp_score"] = [
         set_piece_score(c, d) for c, d in zip(out["corners_order"], out["direct_fk_order"])
@@ -878,6 +1069,9 @@ def build_features_for_asof(
     ):
         if c not in out.columns:
             out[c] = out.get(src)
+    for c in ("venue_n_home", "venue_n_away"):
+        if c not in out.columns:
+            out[c] = 0.0
     team_cols = [
         "team_attack",
         "team_defence",
@@ -885,6 +1079,8 @@ def build_features_for_asof(
         "team_attack_away",
         "team_defence_home",
         "team_defence_away",
+        "venue_n_home",
+        "venue_n_away",
     ]
     if "team_tilt" in out.columns:
         team_cols.append("team_tilt")

@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS fact_fpl_player_gw (
     influence REAL,
     ict_index REAL,
     kickoff_time TEXT,
+    xp REAL,
     PRIMARY KEY (season, fpl_id, round, fixture_id)
 );
 
@@ -207,4 +208,12 @@ CREATE TABLE IF NOT EXISTS map_fbref (
     fbref_player TEXT,
     squad TEXT,
     match_method TEXT
+);
+
+CREATE TABLE IF NOT EXISTS dim_asof_snapshot (
+    season TEXT NOT NULL,
+    as_of_gw INTEGER NOT NULL,
+    is_beta INTEGER NOT NULL DEFAULT 0,
+    official_as_of INTEGER,
+    PRIMARY KEY (season, as_of_gw)
 );

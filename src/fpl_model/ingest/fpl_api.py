@@ -79,6 +79,38 @@ def next_as_of_gw(boot: dict) -> int:
     return max(int(e["id"]) for e in events)
 
 
+def round_results_ready(conn, season: str, gw: int) -> bool:
+    """True when every fixture in ``gw`` is finished and player-GW rows exist."""
+    fx = conn.execute(
+        """
+        SELECT COUNT(*) AS n,
+               SUM(CASE WHEN finished = 1 THEN 1 ELSE 0 END) AS done
+        FROM fact_fixture
+        WHERE season = ? AND event = ?
+        """,
+        (season, int(gw)),
+    ).fetchone()
+    n = int(fx["n"] or 0) if fx is not None else 0
+    done = int(fx["done"] or 0) if fx is not None else 0
+    if n <= 0 or done < n:
+        return False
+    players = conn.execute(
+        "SELECT COUNT(*) AS n FROM fact_fpl_player_gw WHERE season = ? AND round = ?",
+        (season, int(gw)),
+    ).fetchone()
+    return int(players["n"] or 0) > 0
+
+
+def beta_as_of_gw(conn, season: str, official_as_of: int) -> int | None:
+    """If FPL current is T but GW T results are in, return T+1 for a beta snapshot."""
+    t = int(official_as_of)
+    if t < 1:
+        return None
+    if round_results_ready(conn, season, t):
+        return t + 1
+    return None
+
+
 def fetch_bootstrap(settings: Settings | None = None, season: str | None = None, force: bool = False) -> dict:
     settings = settings or load_settings()
     dest_guess = cache_dir(settings, season or "live") / "bootstrap-static.json"
@@ -119,6 +151,114 @@ def fetch_event_live(season: str, event: int, settings: Settings | None = None, 
         data = r.json()
     dest.write_text(json.dumps(data))
     return data
+
+
+def _entry_cache(settings: Settings, entry_id: int, name: str) -> Path:
+    p = settings.data_dir / "raw" / "fpl_api" / "entries" / str(int(entry_id))
+    p.mkdir(parents=True, exist_ok=True)
+    return p / name
+
+
+def fetch_entry(entry_id: int, settings: Settings | None = None, force: bool = False) -> dict:
+    settings = settings or load_settings()
+    dest = _entry_cache(settings, entry_id, "entry.json")
+    if dest.exists() and dest.stat().st_size > 0 and not force:
+        return json.loads(dest.read_text())
+    with _client() as client:
+        r = client.get(f"{FPL_API}/entry/{int(entry_id)}/")
+        r.raise_for_status()
+        data = r.json()
+    dest.write_text(json.dumps(data))
+    return data
+
+
+def fetch_entry_history(entry_id: int, settings: Settings | None = None, force: bool = False) -> dict:
+    settings = settings or load_settings()
+    dest = _entry_cache(settings, entry_id, "history.json")
+    if dest.exists() and dest.stat().st_size > 0 and not force:
+        return json.loads(dest.read_text())
+    with _client() as client:
+        r = client.get(f"{FPL_API}/entry/{int(entry_id)}/history/")
+        r.raise_for_status()
+        data = r.json()
+    dest.write_text(json.dumps(data))
+    return data
+
+
+def fetch_entry_picks(entry_id: int, event: int, settings: Settings | None = None, force: bool = False) -> dict:
+    settings = settings or load_settings()
+    dest = _entry_cache(settings, entry_id, f"picks-{int(event)}.json")
+    if dest.exists() and dest.stat().st_size > 0 and not force:
+        return json.loads(dest.read_text())
+    with _client() as client:
+        r = client.get(f"{FPL_API}/entry/{int(entry_id)}/event/{int(event)}/picks/")
+        r.raise_for_status()
+        data = r.json()
+    dest.write_text(json.dumps(data))
+    return data
+
+
+def estimate_free_transfers(history: dict) -> int:
+    """Approximate FTs at the start of the next GW from public history (max 5)."""
+    past = list(history.get("past") or [])
+    chips = history.get("chips") or []
+    chip_events = {
+        int(c["event"])
+        for c in chips
+        if str(c.get("name") or "").lower() in {"wildcard", "freehit"} and c.get("event") is not None
+    }
+    ft = 1
+    for row in sorted(past, key=lambda x: int(x.get("event") or 0)):
+        ev = int(row.get("event") or 0)
+        used = int(row.get("event_transfers") or 0)
+        if ev in chip_events:
+            ft = 1
+            continue
+        leftover = max(0, ft - used)
+        ft = min(5, leftover + 1)
+    return int(ft)
+
+
+def parse_entry_team(entry: dict, history: dict, picks: dict) -> dict:
+    """Public FPL team: 15 ids, bank £m, estimated FTs, chips already played."""
+    ids = [int(p["element"]) for p in (picks.get("picks") or []) if p.get("element") is not None]
+    bank_raw = entry.get("last_deadline_bank")
+    if bank_raw is None and picks.get("entry_history"):
+        bank_raw = (picks["entry_history"] or {}).get("bank")
+    bank = float(bank_raw or 0) / 10.0
+    chips = [str(c.get("name") or "").lower() for c in (history.get("chips") or [])]
+    name = entry.get("name") or ""
+    return {
+        "ok": len(ids) == 15,
+        "entry_id": entry.get("id"),
+        "name": name,
+        "player_name": f"{entry.get('player_first_name') or ''} {entry.get('player_last_name') or ''}".strip(),
+        "ids": ids,
+        "bank": round(bank, 1),
+        "free_transfers": estimate_free_transfers(history),
+        "chips_used": chips,
+        "current_event": entry.get("current_event"),
+        "error": None if len(ids) == 15 else "could not load a full 15 (picks may be hidden until the deadline)",
+    }
+
+
+def load_entry_team(entry_id: int, settings: Settings | None = None, force: bool = False) -> dict:
+    settings = settings or load_settings()
+    entry = fetch_entry(entry_id, settings, force=force)
+    history = fetch_entry_history(entry_id, settings, force=force)
+    event = entry.get("current_event") or ((history.get("current") or {}).get("event"))
+    if not event:
+        past = history.get("past") or []
+        event = max((int(r["event"]) for r in past if r.get("event")), default=1)
+    try:
+        picks = fetch_entry_picks(entry_id, int(event), settings, force=force)
+    except Exception:
+        past = history.get("past") or []
+        prev = max((int(r["event"]) for r in past if r.get("event")), default=None)
+        if prev is None or prev == event:
+            raise
+        picks = fetch_entry_picks(entry_id, prev, settings, force=force)
+    return parse_entry_team(entry, history, picks)
 
 
 def _clear_fpl_facts(conn, season: str) -> None:
@@ -177,6 +317,9 @@ def gw_rows_from_live(
             stats = {s["identifier"]: s.get("value") for s in (part.get("stats") or []) if isinstance(s, dict) and "identifier" in s}
             if not stats:
                 stats = el.get("stats") or {}
+            live_stats = el.get("stats") or {}
+            if not stats.get("total_points") and live_stats.get("total_points") is not None:
+                stats = {**stats, "total_points": live_stats.get("total_points")}
             row = _stats_row(
                 stats,
                 {
@@ -282,6 +425,7 @@ def load_live_season(season: str | None = None, settings: Settings | None = None
             if c not in out.columns:
                 out[c] = pd.NA
         out["starts"] = pd.to_numeric(out.get("starts"), errors="coerce").fillna(0)
+        out["total_points"] = pd.to_numeric(out.get("total_points"), errors="coerce")
         out["fixture_id"] = out["fixture_id"].fillna(-1)
         out = out.drop_duplicates(subset=["season", "fpl_id", "round", "fixture_id"], keep="last")
         keep = ["season"] + [c for c in GW_COLS.values() if c in out.columns]

@@ -19,8 +19,14 @@ def compute_upside(df: pd.DataFrame, weights: dict[str, Any]) -> pd.DataFrame:
     out = df.copy()
     # Residual = xG − goals (and xA − assists). Wasted chances → positive → Upside > 50.
     # Overperforming finishers/creators (goals > xG) → negative residual → Upside < 50.
-    fin = pd.to_numeric(out.get("npxg90"), errors="coerce") - pd.to_numeric(out.get("goals90"), errors="coerce")
-    cre = pd.to_numeric(out.get("npxa90"), errors="coerce") - pd.to_numeric(out.get("assists90"), errors="coerce")
+    n = (
+        pd.to_numeric(out["matches"], errors="coerce").fillna(0.0)
+        if "matches" in out.columns
+        else pd.Series(0.0, index=out.index)
+    )
+    shrink = (n / (n + 8.0)).clip(0.0, 1.0)
+    fin = (pd.to_numeric(out.get("npxg90"), errors="coerce") - pd.to_numeric(out.get("goals90"), errors="coerce")) * shrink
+    cre = (pd.to_numeric(out.get("npxa90"), errors="coerce") - pd.to_numeric(out.get("assists90"), errors="coerce")) * shrink
     mtr = pd.to_numeric(out.get("minutes_pct_l5"), errors="coerce") - pd.to_numeric(out.get("minutes_pct"), errors="coerce")
     role_raw = pd.to_numeric(out.get("role_change_raw"), errors="coerce")
     price_chg = pd.to_numeric(out.get("price_change"), errors="coerce")

@@ -12,8 +12,23 @@ from fpl_model.scoring.engine import score_asof
 from fpl_model.backtest.walkforward import walkforward
 
 
+def _fmt_xi_metric(p: dict, objective: str) -> str:
+    if objective == "combined":
+        mix = p.get("combined")
+        mix_s = f"{mix:.1f}" if mix is not None else "—"
+        return f"mix {mix_s}  xPts {p.get('xpts')}  ovr {p.get('overall')}"
+    val = p.get(objective)
+    return f"{objective} {val}"
+
+
 def _refresh_understat(season: str, settings, force: bool = True) -> None:
-    from fpl_model.ingest.understat import build_and_store_map, download_league, store_understat_facts, write_id_map_review
+    from fpl_model.ingest.understat import (
+        build_and_store_map,
+        download_league,
+        map_coverage_summary,
+        store_understat_facts,
+        write_id_map_review,
+    )
 
     conn = connect(settings)
     init_db(conn, settings)
@@ -23,11 +38,23 @@ def _refresh_understat(season: str, settings, force: bool = True) -> None:
     n_fpl = int(mapping["fpl_id"].notna().sum())
     n_matched = int(matched.sum())
     n_players, n_matches = store_understat_facts(conn, season, league, settings, force=force)
+    cov = map_coverage_summary(conn, season)
     print(
         f"understat map {n_matched}/{n_fpl} FPL players "
         f"({(n_matched / n_fpl * 100 if n_fpl else 0):.1f}%), "
         f"{n_players} player files, {n_matches} matches"
     )
+    print(
+        f"id-map coverage: {cov['matched']}/{cov['fpl_players']} matched "
+        f"({cov['matched_pct']}%), unmatched_fpl={cov['unmatched_fpl']}, "
+        f"unmatched_understat={cov['unmatched_understat']}"
+    )
+    if cov["unmatched_fpl"] > 0:
+        print(
+            f"WARNING: {cov['unmatched_fpl']} FPL players have no Understat id — "
+            "add aliases in config/player_aliases.yaml then: fpl-model id-map --season "
+            f"{season}"
+        )
     print(f"id map review -> {write_id_map_review(conn, season)}")
     conn.close()
 
@@ -75,7 +102,27 @@ def main(argv: list[str] | None = None) -> int:
     xi.add_argument("--season", required=True)
     xi.add_argument("--as-of", type=int, required=True)
     xi.add_argument("--budget", type=float, default=100.0)
-    xi.add_argument("--objective", choices=["xpts", "overall"], default="xpts")
+    xi.add_argument("--objective", choices=["xpts", "overall", "combined"], default="xpts")
+    xi.add_argument(
+        "--exclude",
+        default="",
+        help="Comma-separated FPL ids to omit from the squad builder",
+    )
+    xi.add_argument(
+        "--exclude-teams",
+        default="",
+        help="Comma-separated FPL team ids to omit from the starting XI (cheap bench fill still allowed)",
+    )
+    xi.add_argument(
+        "--include",
+        default="",
+        help="Comma-separated FPL ids to allow in the XI even if their club is excluded",
+    )
+    xi.add_argument(
+        "--lock",
+        default="",
+        help="Comma-separated FPL ids that must be in the 15; remaining budget is optimized around them",
+    )
 
     m = sub.add_parser("id-map", help="Rebuild FPL↔Understat map and write a review CSV")
     m.add_argument("--season", required=True)
@@ -103,6 +150,22 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Prediction window in GWs (default: settings.horizon_gws). Non-default does not overwrite stored 5-GW scores.",
     )
+
+    early = sub.add_parser(
+        "early-check",
+        help="Walk-forward GW2–7 validation (prior-heavy regime; does not overwrite stored scores)",
+    )
+    early.add_argument("--season", required=True)
+    early.add_argument("--min-gw", type=int, default=2)
+    early.add_argument("--max-gw", type=int, default=7)
+    early.add_argument("--horizon", type=int, default=None)
+
+    cal = sub.add_parser(
+        "calibrate",
+        help="Stored xPts-next at as-of T vs actual points in GW T (does not rescore)",
+    )
+    cal.add_argument("--season", required=True)
+    cal.add_argument("--as-of", type=int, required=True)
 
     args = p.parse_args(argv)
     settings = load_settings()
@@ -147,13 +210,39 @@ def main(argv: list[str] | None = None) -> int:
         print(f"live FPL {season}; scoring as-of GW{as_of} (next {settings.horizon_gws} GWs)")
         if not args.skip_understat:
             _refresh_understat(season, settings)
-        if not args.skip_fbref:
+        if args.skip_fbref:
+            print("WARNING: --skip-fbref set; DefCon priors / tilt / PSxG may be thin early season.")
+        else:
             n_fb = load_fbref(season, settings, force=True)
             print(f"fbref mapped {n_fb} FPL players")
+            if n_fb == 0:
+                print("WARNING: continuing without FBref — save HTML under data/raw/fbref and rerun fbref.")
         n = build_and_store(season, as_of, settings)
         print(f"features as-of GW{as_of}: {n} players")
-        n_s = score_asof(season, as_of, settings)
+        n_s = score_asof(season, as_of, settings, is_beta=False, official_as_of=as_of)
         print(f"scored {n_s} players")
+        from fpl_model.db import connect as _connect
+        from fpl_model.ingest.fpl_api import beta_as_of_gw
+
+        conn = _connect(settings)
+        beta = beta_as_of_gw(conn, season, as_of)
+        conn.close()
+        if beta is not None:
+            n_b = build_and_store(season, beta, settings)
+            print(f"features as-of GW{beta} beta (GW{as_of} results in, FPL still current): {n_b} players")
+            n_bs = score_asof(season, beta, settings, is_beta=True, official_as_of=as_of)
+            print(f"scored {n_bs} players as GW{beta} beta — overwritten when FPL current becomes GW{beta}")
+        if as_of > 1:
+            from fpl_model.backtest.walkforward import calibrate_asof
+
+            cal = calibrate_asof(season, as_of - 1, settings, persist=True)
+            if not cal.get("empty"):
+                print(
+                    f"calibrated as-of GW{as_of - 1} vs GW{as_of - 1} actuals  "
+                    f"n={cal['n']}  mae={cal['mae']:.2f}  bias={cal['bias']:+.2f}"
+                )
+            else:
+                print(f"calibrate GW{as_of - 1}: {cal.get('reason')}")
         return 0
 
     if args.cmd == "features":
@@ -192,6 +281,25 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  Value    {card['value']}")
             print(f"  Overall  {card['overall']}")
             print(f"  Upside   {card['upside']}")
+            if card.get("xpts") is not None:
+                print(f"  xPts     {card['xpts']}  next {card.get('xpts_next', '—')}")
+            if card.get("xpts_parts"):
+                xp = card["xpts_parts"]
+                print(
+                    "    appear {appear}  atk {attack}  cs {cs}  saves {saves}  "
+                    "defcon {defcon}  bonus {bonus}".format(**{k: xp.get(k, "—") for k in ("appear", "attack", "cs", "saves", "defcon", "bonus")})
+                )
+            flags = card.get("flags") or {}
+            if flags:
+                bits = []
+                if flags.get("understat") is False:
+                    bits.append("no Understat map")
+                if flags.get("thin_sample"):
+                    bits.append("thin sample")
+                if flags.get("no_fbref"):
+                    bits.append("no FBref")
+                if bits:
+                    print(f"  flags    {', '.join(bits)}")
             if "upside_parts" in card:
                 p = card["upside_parts"]
                 print(
@@ -212,8 +320,30 @@ def main(argv: list[str] | None = None) -> int:
         from fpl_model.ui.queries import build_xi
 
         conn = connect(settings)
-        out = build_xi(conn, args.season, args.as_of, budget=args.budget, objective=args.objective)
+        exclude = [int(x) for x in args.exclude.split(",") if x.strip()] if args.exclude else []
+        exclude_teams = [int(x) for x in args.exclude_teams.split(",") if x.strip()] if args.exclude_teams else []
+        include = [int(x) for x in args.include.split(",") if x.strip()] if args.include else []
+        lock = [int(x) for x in args.lock.split(",") if x.strip()] if args.lock else []
+        out = build_xi(
+            conn,
+            args.season,
+            args.as_of,
+            budget=args.budget,
+            objective=args.objective,
+            exclude=exclude,
+            exclude_teams=exclude_teams,
+            include=include,
+            lock=lock,
+        )
         conn.close()
+        if exclude:
+            print(f"excluded {len(exclude)} player id(s)")
+        if exclude_teams:
+            print(f"excluded {len(exclude_teams)} club(s) from XI (cheap bench still allowed)")
+        if include:
+            print(f"included {len(include)} player exception(s)")
+        if lock:
+            print(f"locked {len(lock)} player(s) into the squad")
         if not out.get("ok"):
             print("could not build a full 15-man squad", file=sys.stderr)
             return 1
@@ -225,10 +355,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"captain {out['captain']['web_name']}")
         print("\nXI:")
         for p in out["xi"]:
-            print(f"  {p['position']:3} {p['web_name']:16} {p['team'] or '':3} £{p['price']:4.1f}  {out['objective']} {p[out['objective']]}")
+            print(f"  {p['position']:3} {p['web_name']:16} {p['team'] or '':3} £{p['price']:4.1f}  {_fmt_xi_metric(p, out['objective'])}")
         print("\nBench:")
         for p in out["bench"]:
-            print(f"  {p['position']:3} {p['web_name']:16} {p['team'] or '':3} £{p['price']:4.1f}  {out['objective']} {p[out['objective']]}")
+            print(f"  {p['position']:3} {p['web_name']:16} {p['team'] or '':3} £{p['price']:4.1f}  {_fmt_xi_metric(p, out['objective'])}")
         return 0
 
     if args.cmd == "id-map":
@@ -317,6 +447,55 @@ def main(argv: list[str] | None = None) -> int:
         print(df.to_string(index=False))
         print()
         print(df.groupby("position")[["spearman", "top20_overlap", "xpts_mae"]].mean(numeric_only=True).to_string())
+        return 0
+
+    if args.cmd == "early-check":
+        hz = args.horizon
+        df = walkforward(
+            args.season,
+            settings,
+            args.min_gw,
+            args.max_gw,
+            horizon=hz,
+            persist=False,
+        )
+        if df.empty:
+            print("no early-check rows (ingest prior seasons first)")
+            return 1
+        used = hz if hz is not None else settings.horizon_gws
+        print(f"early-check {args.season} GW{args.min_gw}–{args.max_gw}  horizon={used}  persist=False")
+        print(df.to_string(index=False))
+        print()
+        cols = [c for c in ["spearman", "top20_overlap", "xpts_mae", "xpts_bias", "xp_spearman"] if c in df.columns]
+        print(df.groupby("position")[cols].mean(numeric_only=True).to_string())
+        return 0
+
+    if args.cmd == "calibrate":
+        from fpl_model.backtest.walkforward import calibrate_asof
+
+        pack = calibrate_asof(args.season, args.as_of, settings)
+        if pack.get("empty"):
+            print(pack.get("reason") or "no calibration rows")
+            return 1
+        print(
+            f"{pack['season']} as-of GW{pack['as_of_gw']} vs actual GW{pack['as_of_gw']}  "
+            f"n={pack['n']}  mae={pack['mae']:.2f}  bias={pack['bias']:+.2f}  "
+            f"unmatched={pack['unmatched']}"
+        )
+        print(pack["by_position"].to_string(index=False))
+        for key, title in (("by_venue", "venue"), ("by_opponent", "opponent")):
+            rows = pack.get(key) or []
+            if rows:
+                print()
+                print(title)
+                for r in rows:
+                    print(
+                        f"  {r.get('label')}  n={r.get('n')}  mae={float(r['mae']):.2f}  bias={float(r['bias']):+.2f}"
+                    )
+        tab = pack.get("table")
+        if tab is not None and not tab.empty:
+            print()
+            print(tab.to_string(index=False))
         return 0
 
     return 1

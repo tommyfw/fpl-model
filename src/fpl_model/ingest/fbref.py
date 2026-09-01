@@ -435,6 +435,12 @@ def load_fbref(season: str, settings: Settings | None = None, force: bool = Fals
     if parsed.empty:
         conn.commit()
         conn.close()
+        print(
+            f"WARNING: FBref returned 0 players for {season} from {dest}. "
+            "Save squad / shooting / defense / keepersadv / possession HTML locally "
+            "(Cloudflare blocks auto-fetch), then rerun: fpl-model fbref --season "
+            f"{season}. DefCon priors and GK PSxG stay weak without it."
+        )
         return 0
     parsed = parsed.copy()
     parsed["season"] = season
@@ -466,6 +472,11 @@ def load_fbref(season: str, settings: Settings | None = None, force: bool = Fals
         n = 0
     conn.commit()
     conn.close()
+    if n == 0:
+        print(
+            f"WARNING: FBref parsed rows but mapped 0/{len(fpl) if not fpl.empty else 0} "
+            f"FPL players for {season}. Check name/team matching or re-save tables."
+        )
     if "psxg" in parsed.columns and parsed["psxg"].notna().sum() == 0:
         print(
             "FBref keepersadv HTML has empty PSxG cells (common when the page is saved "

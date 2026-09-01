@@ -10,8 +10,9 @@ import pandas as pd
 from fpl_model.config import Settings, load_settings, load_weights
 from fpl_model.db import connect
 from fpl_model.features.stats import to_score_0_100
+from fpl_model.scoring.availability import minutes_risk
 from fpl_model.scoring.upside import compute_upside
-from fpl_model.scoring.xpts import compute_xpts
+from fpl_model.scoring.xpts import compute_xpts, compute_xpts_weeks
 
 POS = ("GK", "DEF", "MID", "FWD")
 
@@ -65,6 +66,30 @@ def _norm_group(df: pd.DataFrame, cols: list[str], invert: set[str] | None = Non
             scored[f"{c}_s"] = 50.0
         scored[f"{c}_s"] = scored[f"{c}_s"].fillna(50.0)
     return scored
+
+
+def _rescore_mid_subpos(df: pd.DataFrame, cols: list[str], *, att_cut: float = 62.0, min_n: int = 10) -> pd.DataFrame:
+    """Percentile F/U leaves among attacking vs defensive mids separately."""
+    if "position" not in df.columns or "pitch_attack" not in df.columns:
+        return df
+    mid = df["position"] == "MID"
+    if int(mid.sum()) < min_n * 2:
+        return df
+    att = pd.to_numeric(df["pitch_attack"], errors="coerce").fillna(70.0)
+    am = mid & (att >= att_cut)
+    dm = mid & ~am
+    if int(am.sum()) < min_n or int(dm.sum()) < min_n:
+        return df
+    for c in cols:
+        raw = c[:-2] if c.endswith("_s") else c
+        if raw not in df.columns:
+            continue
+        scored = f"{raw}_s"
+        if scored not in df.columns:
+            continue
+        for mask in (am, dm):
+            df.loc[mask, scored] = to_score_0_100(df.loc[mask, raw])
+    return df
 
 
 def horizon_weights(hz: list[float], n: int) -> np.ndarray:
@@ -212,6 +237,27 @@ def score_feature_frame(feats: pd.DataFrame, weights: dict[str, Any], settings: 
         if scored in df.columns and raw in df.columns:
             df.loc[df[raw].isna(), scored] = np.nan
 
+    df = _rescore_mid_subpos(
+        df,
+        [
+            "npxgi90",
+            "npxgi90_l5",
+            "npxg90",
+            "npxa90",
+            "shots_in_box90",
+            "key_passes90",
+            "xgchain90",
+            "chance_quality90",
+            "open_npxg90",
+            "points90_blend",
+            "points90",
+            "goals90",
+            "assists90",
+            "bonus90",
+            "bps90",
+        ],
+    )
+
     df["U"] = 50.0
     df["F"] = 50.0
     df["R"] = 50.0
@@ -296,12 +342,20 @@ def score_feature_frame(feats: pd.DataFrame, weights: dict[str, Any], settings: 
             + mw["availability"] * (df.loc[idx, "availability"].fillna(1) * 100)
         ).clip(0, 100)
         if "rest_factor" in df.columns:
-            df.loc[idx, "M"] = (df.loc[idx, "M"] * df.loc[idx, "rest_factor"].fillna(1.0).clip(0.82, 1.0)).clip(0, 100)
+            df.loc[idx, "M"] = (df.loc[idx, "M"] * df.loc[idx, "rest_factor"].fillna(1.0).clip(0.75, 1.0)).clip(0, 100)
         _apply_minutes_reliability(df, idx, pos, settings)
         # News / FPL chance is a hard minutes cap, not a 15% leaf.
         if "availability" in df.columns:
             avail = pd.to_numeric(df.loc[idx, "availability"], errors="coerce").fillna(1.0).clip(0.0, 1.0)
             df.loc[idx, "M"] = (df.loc[idx, "M"] * (0.18 + 0.82 * avail)).clip(0, 100)
+
+    if "understat_matched" in df.columns:
+        um = pd.to_numeric(df["understat_matched"], errors="coerce").fillna(0.0)
+        df["U"] = np.where(um < 1.0, 0.62 * df["U"] + 0.38 * 50.0, df["U"])
+    if "matches" in df.columns:
+        n = pd.to_numeric(df["matches"], errors="coerce").fillna(0.0)
+        thin = n < 6
+        df.loc[thin, "U"] = 0.58 * df.loc[thin, "U"] + 0.42 * 50.0
 
     # Fixtures
     df["O"] = [
@@ -309,6 +363,10 @@ def score_feature_frame(feats: pd.DataFrame, weights: dict[str, Any], settings: 
         for _, r in df.iterrows()
     ]
     df["O"] = df.groupby("position")["O"].transform(lambda s: to_score_0_100(s))
+    # Injured / banned players should not keep full fixture credit on the card.
+    if "availability" in df.columns:
+        av = pd.to_numeric(df["availability"], errors="coerce").fillna(1.0).clip(0.0, 1.0)
+        df["O"] = (df["O"] * (0.55 + 0.45 * av)).clip(0, 100)
 
     q = weights["quality"]
     df["Q"] = q["U"] * df["U"] + q["F"] * df["F"] + q["R"] * df["R"] + q["T"] * df["T"]
@@ -325,7 +383,14 @@ def score_feature_frame(feats: pd.DataFrame, weights: dict[str, Any], settings: 
         )
 
     # Value: component xPts over the horizon (minutes × npxG/A × CS / DefCon / saves)
-    df["xpts"] = compute_xpts(df, weights, settings)
+    xp, parts = compute_xpts(df, weights, settings, return_parts=True)
+    df["xpts"] = xp
+    df["xpts_parts"] = [
+        {k: round(float(parts.loc[i, k]), 2) for k in parts.columns} for i in df.index
+    ]
+    weeks = compute_xpts_weeks(df, weights, settings)
+    df["xpts_gws"] = weeks.apply(lambda r: [round(float(v), 3) for v in r.tolist()], axis=1)
+    df["xpts_next"] = weeks.iloc[:, 0] if not weeks.empty else df["xpts"]
     df["xpts_per_m"] = df["xpts"] / df["price"].replace(0, np.nan)
     df["q_per_m"] = df["Q"] / df["price"].replace(0, np.nan)
     df = _norm_group(df, ["xpts_per_m", "q_per_m"], invert=set())
@@ -355,7 +420,21 @@ def score_feature_frame(feats: pd.DataFrame, weights: dict[str, Any], settings: 
 
     df = compute_upside(df, weights)
 
+    avail = (
+        pd.to_numeric(df["availability"], errors="coerce").fillna(1.0).clip(0.0, 1.0)
+        if "availability" in df.columns
+        else pd.Series(1.0, index=df.index)
+    )
+    # Soft-dampen Overall when news says they are unlikely to play this GW.
+    low = avail < 0.95
+    df.loc[low, "overall"] = (df.loc[low, "overall"] * (0.62 + 0.38 * avail.loc[low])).clip(0, 100)
+
     def action(r) -> str:
+        a = 1.0
+        if "availability" in r.index and pd.notna(r["availability"]):
+            a = float(r["availability"])
+        if a < 0.35:
+            return "HOLD" if r["overall"] >= 55 else "AVOID"
         if r["overall"] >= 80 and (r["upside"] >= 55 or (r["M"] >= 80 and r["O"] >= 70)):
             return "STRONG BUY"
         if r["overall"] >= 70 and r["M"] >= 60:
@@ -393,6 +472,39 @@ def persist_scores(conn: sqlite3.Connection, season: str, as_of_gw: int, scored:
                 "ownership": round(float(r.get("up_ownership", 50)), 1),
             },
             "xpts": round(float(r["xpts"]), 2),
+            "xpts_next": round(float(r["xpts_next"] if pd.notna(r.get("xpts_next")) else r["xpts"]), 2),
+            "xpts_gws": list(r["xpts_gws"]) if isinstance(r.get("xpts_gws"), (list, tuple)) else None,
+            "xpts_parts": r["xpts_parts"] if isinstance(r.get("xpts_parts"), dict) else None,
+            "flags": {
+                "understat": float(r["understat_matched"] or 0) >= 1
+                if "understat_matched" in r.index
+                else False,
+                "thin_sample": float(r["matches"] or 0) < 6 if "matches" in r.index else False,
+                "no_fbref": float(r["fbref_matched"] or 0) < 1 if "fbref_matched" in r.index else False,
+            },
+            "minutes_risk": minutes_risk(
+                availability=r["availability"] if pd.notna(r.get("availability")) else 1.0,
+                status=r.get("status"),
+                news=r.get("news"),
+                chance_this=r.get("chance_of_playing_this"),
+                chance_next=r.get("chance_of_playing_next"),
+                slot_security=r.get("slot_security"),
+                pos_slot_rank=r.get("pos_slot_rank"),
+                position=r.get("position"),
+                start_pct_l5=r.get("start_pct_l5"),
+                minutes=r.get("minutes"),
+                starts=r.get("starts"),
+                appearances=r.get("appearances"),
+            ),
+            "availability": round(float(r["availability"]), 3) if pd.notna(r.get("availability")) else 1.0,
+            "availability_horizon": round(
+                float(
+                    r["availability_horizon"]
+                    if pd.notna(r.get("availability_horizon"))
+                    else (r["availability"] if pd.notna(r.get("availability")) else 1.0)
+                ),
+                3,
+            ),
             "action": r["action"],
         }
         rows.append(
@@ -457,7 +569,35 @@ def load_feats(
     return pd.concat([raw.drop(columns=["features_json"]), extra], axis=1)
 
 
-def score_asof(season: str, as_of_gw: int, settings: Settings | None = None) -> int:
+def persist_asof_snapshot(
+    conn: sqlite3.Connection,
+    season: str,
+    as_of_gw: int,
+    *,
+    is_beta: bool,
+    official_as_of: int | None,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO dim_asof_snapshot(season, as_of_gw, is_beta, official_as_of)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(season, as_of_gw) DO UPDATE SET
+            is_beta = excluded.is_beta,
+            official_as_of = excluded.official_as_of
+        """,
+        (season, int(as_of_gw), 1 if is_beta else 0, official_as_of),
+    )
+    conn.commit()
+
+
+def score_asof(
+    season: str,
+    as_of_gw: int,
+    settings: Settings | None = None,
+    *,
+    is_beta: bool = False,
+    official_as_of: int | None = None,
+) -> int:
     settings = settings or load_settings()
     weights = load_weights()
     conn = connect(settings)
@@ -467,6 +607,13 @@ def score_asof(season: str, as_of_gw: int, settings: Settings | None = None) -> 
         return 0
     scored = score_feature_frame(feats, weights, settings)
     persist_scores(conn, season, as_of_gw, scored)
+    persist_asof_snapshot(
+        conn,
+        season,
+        as_of_gw,
+        is_beta=is_beta,
+        official_as_of=official_as_of if official_as_of is not None else as_of_gw,
+    )
     n = len(scored)
     conn.close()
     return n

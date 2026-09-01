@@ -7,10 +7,38 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from fpl_model.config import Settings, load_settings
-from fpl_model.db import connect
+from fpl_model.db import connect, init_db
 from fpl_model.ui import queries
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+
+def _int_list(raw: str) -> list[int]:
+    if not raw or not raw.strip():
+        return []
+    try:
+        return [int(x) for x in raw.split(",") if x.strip()]
+    except ValueError:
+        return []
+
+
+def _pair_list(raw: str) -> list[tuple[int, int]]:
+    if not raw or not raw.strip():
+        return []
+    out: list[tuple[int, int]] = []
+    for part in raw.split(","):
+        bit = part.strip()
+        if not bit:
+            continue
+        sep = "-" if "-" in bit else ":"
+        if sep not in bit:
+            return []
+        a, b = bit.split(sep, 1)
+        try:
+            out.append((int(a), int(b)))
+        except ValueError:
+            return []
+    return out
 
 
 class UIHandler(SimpleHTTPRequestHandler):
@@ -51,26 +79,45 @@ class UIHandler(SimpleHTTPRequestHandler):
         if path == "/api/lineup":
             self._json(self._lineup(qs))
             return
+        if path == "/api/rebuild":
+            self._json(self._rebuild(qs))
+            return
+        if path == "/api/calibrate":
+            self._json(self._calibrate(qs))
+            return
+        if path == "/api/fpl-team":
+            self._json(self._fpl_team(qs))
+            return
         if path in ("/", "/index.html"):
             self.path = "/index.html"
         super().do_GET()
 
     def _meta(self) -> dict:
         conn = connect(self.settings)
+        init_db(conn, self.settings)
         snaps = queries.available_snapshots(conn)
         preferred = getattr(self.settings, "seasons", [None])[0]
         default = queries.default_snapshot(conn, preferred)
+        clubs = queries.list_clubs(conn)
         conn.close()
         return {
             "snapshots": snaps,
             "default": default,
             "horizon_gws": self.settings.horizon_gws,
+            "clubs": clubs,
         }
 
     def _players(self, qs: dict[str, str]) -> dict:
         season, as_of = self._scope(qs)
         if season is None:
             return {"players": [], "error": "no scores yet"}
+        team_id = None
+        raw_team = qs.get("team") or qs.get("team_id") or ""
+        if raw_team.strip():
+            try:
+                team_id = int(raw_team)
+            except ValueError:
+                team_id = None
         conn = connect(self.settings)
         players = queries.list_players(
             conn,
@@ -79,6 +126,7 @@ class UIHandler(SimpleHTTPRequestHandler):
             position=qs.get("position") or None,
             q=qs.get("q") or None,
             action=qs.get("action") or None,
+            team_id=team_id,
             sort=qs.get("sort") or "xpts",
         )
         conn.close()
@@ -110,10 +158,24 @@ class UIHandler(SimpleHTTPRequestHandler):
         except ValueError:
             budget = 100.0
         objective = qs.get("objective") or "xpts"
-        if objective not in {"xpts", "overall"}:
+        if objective not in {"xpts", "overall", "combined"}:
             objective = "xpts"
+        exclude = _int_list(qs.get("exclude") or "")
+        exclude_teams = _int_list(qs.get("exclude_teams") or "")
+        include = _int_list(qs.get("include") or "")
+        lock = _int_list(qs.get("lock") or "")
         conn = connect(self.settings)
-        out = queries.build_xi(conn, season, as_of, budget=budget, objective=objective)
+        out = queries.build_xi(
+            conn,
+            season,
+            as_of,
+            budget=budget,
+            objective=objective,
+            exclude=exclude,
+            exclude_teams=exclude_teams,
+            include=include,
+            lock=lock,
+        )
         conn.close()
         return out
 
@@ -140,12 +202,25 @@ class UIHandler(SimpleHTTPRequestHandler):
         except ValueError:
             bank = 0.0
         try:
+            budget = float(qs.get("budget") or 100)
+        except ValueError:
+            budget = 100.0
+        try:
             ft = int(qs.get("ft") or 1)
         except ValueError:
             ft = 1
         objective = qs.get("objective") or "xpts"
-        if objective not in {"xpts", "overall"}:
+        if objective not in {"xpts", "overall", "combined"}:
             objective = "xpts"
+        exclude = _int_list(qs.get("exclude") or "")
+        exclude_teams = _int_list(qs.get("exclude_teams") or "")
+        include = _int_list(qs.get("include") or "")
+        keep = _int_list(qs.get("keep") or "")
+        try:
+            want = int(qs.get("want") or 2)
+        except ValueError:
+            want = 2
+        committed = _pair_list(qs.get("moves") or "")
         conn = connect(self.settings)
         out = queries.transfers_for_squad(
             conn,
@@ -153,8 +228,15 @@ class UIHandler(SimpleHTTPRequestHandler):
             as_of,
             squad_ids,
             bank=bank,
+            budget=budget,
             free_transfers=ft,
             objective=objective,
+            exclude=exclude,
+            exclude_teams=exclude_teams,
+            include=include,
+            keep=keep,
+            want_transfers=want,
+            committed=committed,
         )
         conn.close()
         return out
@@ -168,13 +250,98 @@ class UIHandler(SimpleHTTPRequestHandler):
             squad_ids = [int(x) for x in raw.split(",") if x.strip()]
         except ValueError:
             return {"ok": False, "error": "bad squad ids", "xi": [], "bench": []}
+        event = None
+        raw_ev = qs.get("event") or qs.get("gw") or ""
+        if raw_ev.strip():
+            try:
+                event = int(raw_ev)
+            except ValueError:
+                event = None
         conn = connect(self.settings)
         try:
-            return queries.lineup_for_squad(conn, season, as_of, squad_ids, settings=self.settings)
+            return queries.lineup_for_squad(
+                conn, season, as_of, squad_ids, event=event, settings=self.settings
+            )
         except Exception as exc:
             return {"ok": False, "error": f"lineup failed: {exc}", "xi": [], "bench": []}
         finally:
             conn.close()
+
+    def _rebuild(self, qs: dict[str, str]) -> dict:
+        season, as_of = self._scope(qs)
+        if season is None:
+            return {"ok": False, "error": "no scores yet", "squad": []}
+        raw = qs.get("squad") or ""
+        try:
+            squad_ids = [int(x) for x in raw.split(",") if x.strip()]
+        except ValueError:
+            return {"ok": False, "error": "bad squad ids", "squad": []}
+        try:
+            bank = float(qs.get("bank") or 0)
+        except ValueError:
+            bank = 0.0
+        try:
+            budget = float(qs.get("budget") or 100)
+        except ValueError:
+            budget = 100.0
+        objective = qs.get("objective") or "xpts"
+        if objective not in {"xpts", "overall", "combined"}:
+            objective = "xpts"
+        conn = connect(self.settings)
+        out = queries.rebuild_for_squad(
+            conn,
+            season,
+            as_of,
+            squad_ids,
+            chip=qs.get("chip") or "wildcard",
+            bank=bank,
+            budget=budget,
+            objective=objective,
+            exclude=_int_list(qs.get("exclude") or ""),
+            exclude_teams=_int_list(qs.get("exclude_teams") or ""),
+            include=_int_list(qs.get("include") or ""),
+            keep=_int_list(qs.get("keep") or ""),
+        )
+        conn.close()
+        return out
+
+    def _calibrate(self, qs: dict[str, str]) -> dict:
+        season, as_of = self._scope(qs)
+        if season is None:
+            return {"empty": True, "reason": "no scores yet"}
+        conn = connect(self.settings)
+        stored = queries.latest_calibration(conn, season, as_of - 1 if as_of > 1 else as_of)
+        if not stored:
+            stored = queries.latest_calibration(conn, season, None)
+        conn.close()
+        if stored:
+            return {"empty": False, **stored}
+        from fpl_model.backtest.walkforward import calibrate_asof
+
+        target = as_of - 1 if as_of > 1 else as_of
+        pack = calibrate_asof(season, target, self.settings, persist=True)
+        if pack.get("empty"):
+            return pack
+        pos = pack.get("by_position")
+        if hasattr(pos, "to_dict"):
+            pack["by_position"] = pos.to_dict(orient="records")
+        tab = pack.get("table")
+        if hasattr(tab, "to_dict"):
+            pack["table"] = tab.to_dict(orient="records") if not tab.empty else []
+        return pack
+
+    def _fpl_team(self, qs: dict[str, str]) -> dict:
+        raw = qs.get("entry") or qs.get("id") or ""
+        try:
+            entry_id = int(raw)
+        except ValueError:
+            return {"ok": False, "error": "enter your FPL team ID (from the URL of your team page)"}
+        from fpl_model.ingest.fpl_api import load_entry_team
+
+        try:
+            return load_entry_team(entry_id, self.settings, force=True)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "ids": []}
 
     def _scope(self, qs: dict[str, str]) -> tuple[str | None, int]:
         conn = connect(self.settings)
@@ -196,6 +363,7 @@ class UIHandler(SimpleHTTPRequestHandler):
 
 def serve(host: str = "127.0.0.1", port: int = 8765, settings: Settings | None = None) -> None:
     settings = settings or load_settings()
+    init_db(settings=settings)
     handler = partial(UIHandler, settings=settings)
     httpd = ThreadingHTTPServer((host, port), handler)
     print(f"player cards → http://{host}:{port}")

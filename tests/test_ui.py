@@ -63,7 +63,7 @@ def _conn() -> sqlite3.Connection:
 def test_list_and_get_player():
     conn = _conn()
     snaps = queries.available_snapshots(conn)
-    assert snaps == [{"season": "2026-27", "as_of_gw": 2, "n": 1}]
+    assert snaps == [{"season": "2026-27", "as_of_gw": 2, "n": 1, "is_beta": False}]
     rows = queries.list_players(conn, "2026-27", 2, q="haal")
     assert len(rows) == 1
     assert rows[0]["web_name"] == "Haaland"
@@ -74,6 +74,11 @@ def test_list_and_get_player():
     assert p["first_name"] == "Erling"
     empty = queries.list_players(conn, "2026-27", 2, position="GK")
     assert empty == []
+    by_club = queries.list_players(conn, "2026-27", 2, team_id=1)
+    assert len(by_club) == 1
+    assert queries.list_players(conn, "2026-27", 2, team_id=99) == []
+    clubs = queries.list_clubs(conn, "2026-27")
+    assert clubs["2026-27"][0]["short_name"] == "ARS"
 
 
 def test_fixture_ticker_uses_pack_and_league_bands():
@@ -132,6 +137,14 @@ def test_lineup_needs_fifteen():
     out = queries.lineup_for_squad(conn, "2026-27", 2, [1])
     assert out["ok"] is False
     assert "15" in out["error"]
+
+
+def test_lineup_event_clamps_to_horizon():
+    assert queries._lineup_event(3, None, 5) == 3
+    assert queries._lineup_event(3, 4, 5) == 4
+    assert queries._lineup_event(3, 7, 5) == 7
+    assert queries._lineup_event(3, 8, 5) == 7
+    assert queries._lineup_event(3, 1, 5) == 3
 
 
 

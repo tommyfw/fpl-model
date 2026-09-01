@@ -2,63 +2,63 @@ Pick: 0.7 Spearman + 0.3 Top-20, mean over GK/DEF/MID/FWD, then
 weighted seasons {'2024-25': 0.35, '2025-26': 0.65} (higher score is better). Not mean-of-ranks.
 Overall and xPts are scored on separate mix sets (factored grid).
 
-Best Overall: yaml_as_is__more_f__yaml_as_is  final=0.6766  24-25=0.6638  25-26=0.6834
-YAML as-is Overall: final=0.6751  24-25=0.6617  25-26=0.6823
-Best xPts: yaml_as_is__yaml_as_is__fwd_hot  final=0.7181  24-25=0.7068  25-26=0.7242
-YAML as-is xPts: final=0.7181  24-25=0.7068  25-26=0.7242
+Best Overall: more_m__more_f_mild__yaml_as_is  final=0.6473  24-25=0.6189  25-26=0.6626
+YAML as-is Overall: final=0.6427  24-25=0.6114  25-26=0.6595
+Best xPts: yaml_as_is__yaml_as_is__less_l5  final=0.7185  24-25=0.7085  25-26=0.7239
+YAML as-is xPts: final=0.7181  24-25=0.7084  25-26=0.7233
 
 Paste into config/weights.yaml only if you want this live (this lab will not do it):
 overall:
-  Q: 0.3024
-  M: 0.58
-  O: 0.084
-  V: 0.0336
+  Q: 0.216
+  M: 0.7
+  O: 0.06
+  V: 0.024
 overall_by_pos:
   DEF:
-    Q: 0.3024
-    M: 0.58
-    O: 0.084
-    V: 0.0336
+    Q: 0.2217
+    M: 0.66
+    O: 0.0887
+    V: 0.0295
   MID:
-    Q: 0.3024
-    M: 0.58
-    O: 0.084
-    V: 0.0336
+    Q: 0.2052
+    M: 0.74
+    O: 0.0342
+    V: 0.0205
   FWD:
-    Q: 0.3024
-    M: 0.58
-    O: 0.084
-    V: 0.0336
+    Q: 0.2513
+    M: 0.66
+    O: 0.0739
+    V: 0.0148
   GK:
-    Q: 0.3024
-    M: 0.58
-    O: 0.084
-    V: 0.0336
+    Q: 0.2182
+    M: 0.68
+    O: 0.0727
+    V: 0.0291
 quality:
-  U: 0.3461
+  U: 0.3462
   F: 0.46
-  R: 0.1245
-  T: 0.0693
+  R: 0.1246
+  T: 0.0694
 quality_by_pos:
   MID:
-    U: 0.2567
-    F: 0.5
-    R: 0.1622
-    T: 0.0811
+    U: 0.3375
+    F: 0.4
+    R: 0.1781
+    T: 0.0844
   DEF:
     U: 0.2838
     F: 0.5
-    R: 0.1622
+    R: 0.1621
     T: 0.0541
   FWD:
-    U: 0.3378
+    U: 0.3379
     F: 0.5
     R: 0.1216
     T: 0.0406
   GK:
-    U: 0.3378
+    U: 0.3379
     F: 0.5
     R: 0.1216
     T: 0.0406
 xpts overlay:
-  fwd_attack_scale: 1.2
+  start_l5: 0.39
