@@ -267,6 +267,134 @@ def upcoming_fixtures(fx: pd.DataFrame, as_of_gw: int, horizon: int) -> pd.DataF
     return out
 
 
+def attach_horizon_fixtures(
+    feats: pd.DataFrame,
+    fx: pd.DataFrame,
+    as_of_gw: int,
+    horizon: int,
+) -> pd.DataFrame:
+    """Repack ``fixtures_json`` for T .. T+horizon-1 without changing stored 5-GW scores."""
+    if feats.empty or fx is None or fx.empty or horizon < 1:
+        return feats
+    out = feats.copy()
+    upc = upcoming_fixtures(fx, as_of_gw, int(horizon))
+    team_cols = [
+        c
+        for c in (
+            "team_attack",
+            "team_defence",
+            "team_attack_home",
+            "team_attack_away",
+            "team_defence_home",
+            "team_defence_away",
+            "team_tilt",
+            "venue_n_home",
+            "venue_n_away",
+        )
+        if c in out.columns
+    ]
+    if "team_id" not in out.columns or not team_cols:
+        return out
+    lookup = out.dropna(subset=["team_id"]).groupby("team_id")[team_cols].first()
+    lookup.index = lookup.index.astype(int)
+    atk = lookup["team_attack"].dropna() if "team_attack" in lookup.columns else pd.Series(dtype=float)
+    league_xg = float(atk.mean()) if len(atk) else 1.35
+    if not np.isfinite(league_xg) or league_xg <= 0.4:
+        league_xg = 1.35
+    packed: list[str] = []
+    for _, row in out.iterrows():
+        team = row.get("team_id")
+        if pd.isna(team):
+            packed.append("{}")
+            continue
+        team = int(team)
+        fxs = upc.loc[(upc["team_h"] == team) | (upc["team_a"] == team)] if not upc.empty else upc
+        by_event: dict[int, list] = {}
+        for _, fr in fxs.iterrows():
+            if pd.isna(fr.get("event")):
+                continue
+            home = bool(int(fr["team_h"]) == team)
+            opp = fr["team_a"] if home else fr["team_h"]
+            ev = int(fr["event"])
+            by_event.setdefault(ev, []).append(
+                pack_match_for_team(
+                    home=home,
+                    team_id=team,
+                    opp_id=opp,
+                    lookup=lookup,
+                    league_xg=league_xg,
+                    position=str(row.get("position") or "MID"),
+                )
+            )
+        packed.append(json.dumps({str(k): v for k, v in by_event.items()}))
+    out["fixtures_json"] = packed
+    return out
+
+
+def attach_horizon_fixtures(
+    feats: pd.DataFrame,
+    fx: pd.DataFrame,
+    as_of_gw: int,
+    horizon: int,
+) -> pd.DataFrame:
+    """Repack ``fixtures_json`` for T .. T+horizon-1 without changing stored 5-GW scores."""
+    if feats.empty or fx is None or fx.empty or horizon < 1:
+        return feats
+    out = feats.copy()
+    upc = upcoming_fixtures(fx, as_of_gw, int(horizon))
+    team_cols = [
+        c
+        for c in (
+            "team_attack",
+            "team_defence",
+            "team_attack_home",
+            "team_attack_away",
+            "team_defence_home",
+            "team_defence_away",
+            "team_tilt",
+            "venue_n_home",
+            "venue_n_away",
+        )
+        if c in out.columns
+    ]
+    if "team_id" not in out.columns or not team_cols:
+        return out
+    lookup = out.dropna(subset=["team_id"]).groupby("team_id")[team_cols].first()
+    lookup.index = lookup.index.astype(int)
+    atk = lookup["team_attack"].dropna() if "team_attack" in lookup.columns else pd.Series(dtype=float)
+    league_xg = float(atk.mean()) if len(atk) else 1.35
+    if not np.isfinite(league_xg) or league_xg <= 0.4:
+        league_xg = 1.35
+    packed: list[str] = []
+    for _, row in out.iterrows():
+        team = row.get("team_id")
+        if pd.isna(team):
+            packed.append("{}")
+            continue
+        team = int(team)
+        fxs = upc.loc[(upc["team_h"] == team) | (upc["team_a"] == team)] if not upc.empty else upc
+        by_event: dict[int, list] = {}
+        for _, fr in fxs.iterrows():
+            if pd.isna(fr.get("event")):
+                continue
+            home = bool(int(fr["team_h"]) == team)
+            opp = fr["team_a"] if home else fr["team_h"]
+            ev = int(fr["event"])
+            by_event.setdefault(ev, []).append(
+                pack_match_for_team(
+                    home=home,
+                    team_id=team,
+                    opp_id=opp,
+                    lookup=lookup,
+                    league_xg=league_xg,
+                    position=str(row.get("position") or "MID"),
+                )
+            )
+        packed.append(json.dumps({str(k): v for k, v in by_event.items()}))
+    out["fixtures_json"] = packed
+    return out
+
+
 def _team_matches(fx: pd.DataFrame, as_of_gw: int) -> pd.DataFrame:
     played = fx.loc[fx["event"] < as_of_gw].copy()
     rows = []

@@ -222,15 +222,17 @@ xpts:
   defcon_mid: 1.15
   save_per_pt: 3.0
   # Poisson P(CS) overstates FPL CS (60+ mins, late goals). Attack stays unscaled.
-  cs_scale: 0.50
+  # 2024–26 walk-forward: xPts under-forecasts ~0.3–0.4/GW; nudge CS/residual/bonus
+  # only (not overall_by_pos, not fwd_attack_scale).
+  cs_scale: 0.55
   gk_cs_scale: 1.18
   defcon_def: 1.35
   fwd_attack_scale: 1.0
   gk_attack_scale: 0.12
   pen_xg90: 0.08
-  p90_residual: 0.10
-  p90_residual_def: 0.06
-  bonus_scale: 0.55
+  p90_residual: 0.13
+  p90_residual_def: 0.09
+  bonus_scale: 0.60
   bps_scale: 0.12
   # GK saves: mix historical saves/90 with this match's expected goals against.
   save_hist: 0.45

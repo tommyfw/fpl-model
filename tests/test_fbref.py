@@ -81,3 +81,49 @@ def test_parse_keepersadv_from_data_stat_html(tmp_path):
     gk = parse_keepersadv(dest)
     assert float(gk.loc[gk["player"] == "Alisson", "psxg"].iloc[0]) == 3.2
     assert float(gk.loc[gk["player"] == "Alisson", "psxg_net90"].iloc[0]) == 0.20
+
+
+def test_parse_keepersadv_prefers_commented_table_with_values(tmp_path):
+    dest = tmp_path
+    (dest / "keepersadv.html").write_text(
+        """<html>
+        <table id="stats_keeper_adv">
+        <tr><th data-stat="player">Player</th><th data-stat="gk_psxg">PSxG</th></tr>
+        <tr><td data-stat="player">Alisson</td><td data-stat="gk_psxg"></td></tr>
+        </table>
+        <!--
+        <table id="stats_keeper_adv">
+        <tr><th data-stat="player">Player</th><th data-stat="team">Squad</th>
+            <th data-stat="minutes_90s">90s</th><th data-stat="gk_psxg">PSxG</th>
+            <th data-stat="gk_psxg_net">PSxG+/-</th></tr>
+        <tr><td data-stat="player">Alisson</td><td data-stat="team">Liverpool</td>
+            <td data-stat="minutes_90s">2.0</td><td data-stat="gk_psxg">4.1</td>
+            <td data-stat="gk_psxg_net">0.5</td></tr>
+        </table>
+        -->
+        </html>""",
+        encoding="utf-8",
+    )
+    gk = parse_keepersadv(dest)
+    assert float(gk.loc[gk["player"] == "Alisson", "psxg"].iloc[0]) == 4.1
+
+
+def test_copy_fbref_from_downloads(tmp_path):
+    from dataclasses import replace
+
+    from fpl_model.config import load_settings
+    from fpl_model.ingest.fbref import copy_fbref_from_downloads
+
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    (downloads / "Premier League Player Stats _ FBref.com.html").write_text("<html>stats</html>")
+    (downloads / "Premier League Defensive Action Stats _ FBref.com.html").write_text("<html>def</html>")
+    (downloads / "Premier League Goalkeeper Stats _ FBref.com.html").write_text("<html>gk</html>")
+    (downloads / "Premier League Possession Stats _ FBref.com.html").write_text("<html>poss</html>")
+    settings = replace(load_settings(), data_dir=tmp_path / "data")
+    copied = copy_fbref_from_downloads("2026-27", settings, downloads=downloads)
+    dest = settings.data_dir / "raw" / "fbref" / "2026-27"
+    assert set(copied) == {"stats.html", "defense.html", "keepersadv.html", "possession.html"}
+    assert (dest / "keepersadv.html").read_text() == "<html>gk</html>"
+    again = copy_fbref_from_downloads("2026-27", settings, downloads=downloads)
+    assert again == []

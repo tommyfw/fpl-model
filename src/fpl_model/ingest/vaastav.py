@@ -6,7 +6,7 @@ import httpx
 import pandas as pd
 
 from fpl_model.config import Settings, load_settings
-from fpl_model.db import connect, init_db
+from fpl_model.db import archive_score_player_asof, connect, init_db
 
 POSITION_MAP = {1: "GK", 2: "DEF", 3: "MID", 4: "FWD", "GK": "GK", "GKP": "GK", "DEF": "DEF", "MID": "MID", "FWD": "FWD"}
 
@@ -105,6 +105,7 @@ def _to_sql(conn, df: pd.DataFrame, table: str) -> None:
 
 
 def _clear_season(conn, season: str) -> None:
+    archive_score_player_asof(conn, season)
     for table in (
         "score_player_asof",
         "feat_player_asof",

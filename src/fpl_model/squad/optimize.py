@@ -17,14 +17,53 @@ POS_ORDER = ("GK", "DEF", "MID", "FWD")
 OBJECTIVES = ("xpts", "overall", "combined")
 
 
+def _minutes_mult(p: dict[str, Any]) -> float:
+    """Haircut this-GW / xPts objectives when a player is unlikely to start."""
+    m = 1.0
+    av = p.get("availability")
+    if av is not None:
+        a = float(av)
+        if a <= 0.0:
+            m = 0.05
+        elif a < 0.25:
+            m = 0.15
+        elif a < 0.50:
+            m = 0.40
+        elif a < 0.75:
+            m = 0.70
+        else:
+            m = 1.0
+    risk = p.get("minutes_risk") if isinstance(p.get("minutes_risk"), dict) else {}
+    level = risk.get("level")
+    if level == "risk":
+        m = min(m, 0.25)
+    elif level == "watch":
+        m = min(m, 0.80)
+    return m
+
+
+def _nailed_starter(p: dict[str, Any]) -> bool:
+    if p.get("_xi_ok") is False:
+        return False
+    risk = p.get("minutes_risk") if isinstance(p.get("minutes_risk"), dict) else {}
+    if risk.get("level") == "risk":
+        return False
+    av = p.get("availability")
+    if av is not None and float(av) < 0.70:
+        return False
+    return True
+
+
 def _xi_start_key(p: dict[str, Any], objective: str, lock_ids: set[int] | None = None) -> tuple:
     """Locked players start on the stacked XI; weekly lineups may rotate them for blanks."""
     lock_ids = lock_ids or set()
     locked = int(p["fpl_id"]) in lock_ids
     force_start = locked and not str(objective).startswith("gw:")
+    risk = p.get("minutes_risk") if isinstance(p.get("minutes_risk"), dict) else {}
     return (
         p.get("_xi_ok") is False,
         not force_start,
+        risk.get("level") == "risk",
         -_obj(p, objective),
     )
 
@@ -39,14 +78,18 @@ def _mark_bench_only(p: dict[str, Any], xi_ok_ids: set[int] | None) -> dict[str,
 
 def _obj(p: dict[str, Any], key: str) -> float:
     if key.startswith("gw:"):
-        return _gw_pts(p, int(key[3:]))
+        raw = _gw_pts(p, int(key[3:]))
+        return raw * _minutes_mult(p)
     if key == "combined":
         v = p.get("combined")
         if v is not None:
             return float(v)
         return float(p.get("xpts") or 0) + 0.35 * float(p.get("overall") or 0)
     v = p.get(key)
-    return float(v) if v is not None else 0.0
+    raw = float(v) if v is not None else 0.0
+    if key in {"xpts", "xpts_next", "xpts_gw"}:
+        return raw * _minutes_mult(p)
+    return raw
 
 
 def _gw_pts(p: dict[str, Any], t: int) -> float:
@@ -683,7 +726,7 @@ def pick_xi(
     }
     best_xi: list[dict[str, Any]] | None = None
     best_form: tuple[int, int, int, int] | None = None
-    best_key: tuple[int, float] | None = None
+    best_key: tuple | None = None
     for form in FORMATIONS:
         counts = dict(zip(POS_ORDER, form, strict=True))
         if any(len(by_pos[pos]) < n for pos, n in counts.items()):
@@ -692,14 +735,29 @@ def pick_xi(
         for pos, n in counts.items():
             xi.extend(by_pos[pos][:n])
         banned_n = sum(1 for p in xi if p.get("_xi_ok") is False)
+        need_def = int(counts["DEF"])
+        nailed_def = sum(1 for p in xi if p["position"] == "DEF" and _nailed_starter(p))
+        def_short = max(0, min(3, need_def) - nailed_def)
         score = sum(_obj(p, objective) for p in xi)
-        key = (-banned_n, score)
+        key = (-banned_n, -def_short, score)
         if best_key is None or key > best_key:
             best_key = key
             best_xi = xi
             best_form = form
     if best_xi is None:
-        return {"xi": [], "bench": squad, "formation": None, "xi_objective": 0.0, "captain": None}
+        return {
+            "xi": [],
+            "bench": squad,
+            "formation": None,
+            "xi_objective": 0.0,
+            "captain": None,
+            "vice_captain": None,
+            "captain_xpts": 0.0,
+            "vice_xpts": 0.0,
+            "captain_ev": 0.0,
+            "vice_ev": 0.0,
+            "triple_ev": 0.0,
+        }
     xi_ids = {p["fpl_id"] for p in best_xi}
     bench = [p for p in squad if p["fpl_id"] not in xi_ids]
     bench_gk = [p for p in bench if p["position"] == "GK"]
@@ -713,29 +771,99 @@ def pick_xi(
     )
     bench = bench_out + bench_gk
     captain = _pick_captain(best_xi, objective)
+    vice = _pick_vice(best_xi, captain, objective)
     xi_score = sum(_obj(p, objective) for p in best_xi)
     if _points_objective(objective) and captain is not None:
         xi_score += _obj(captain, objective)
+    cap_pts = _this_gw_pts(captain, objective) if captain is not None else 0.0
+    vice_pts = _this_gw_pts(vice, objective) if vice is not None else 0.0
+    ev = _captain_ev_tree(cap_pts, vice_pts, _p_play(captain), _p_play(vice))
     return {
         "xi": best_xi,
         "bench": bench,
         "formation": f"{best_form[1]}-{best_form[2]}-{best_form[3]}",
         "xi_objective": round(xi_score, 2),
         "captain": captain,
+        "vice_captain": vice,
+        "captain_xpts": round(cap_pts, 2),
+        "vice_xpts": round(vice_pts, 2),
+        **ev,
     }
+
+
+def xi_over_weeks(squad: list[dict[str, Any]], n: int, start: int = 0) -> float:
+    """Sum of legal XI + captain xPts over packed gameweeks ``start .. start+n-1``."""
+    n_have = _n_gws(squad)
+    lo = max(0, int(start))
+    hi = lo + max(0, int(n))
+    if n_have:
+        hi = min(hi, n_have)
+    total = 0.0
+    for t in range(lo, hi):
+        pack = pick_xi(squad, objective=f"gw:{t}")
+        total += float(pack.get("xi_objective") or 0)
+    return round(total, 2)
 
 
 def _points_objective(objective: str) -> bool:
     return objective in {"xpts", "xpts_next", "xpts_gw"} or str(objective).startswith("gw:")
 
 
+def _p_play(p: dict[str, Any] | None) -> float:
+    """P(plays any minutes) from availability / minutes-risk. Missing → 1."""
+    if not p:
+        return 0.0
+    av = p.get("availability")
+    p_play = 1.0 if av is None else max(0.0, min(1.0, float(av)))
+    risk = p.get("minutes_risk") if isinstance(p.get("minutes_risk"), dict) else {}
+    if risk.get("level") == "risk":
+        p_play = min(p_play, 0.25)
+    elif risk.get("level") == "watch":
+        p_play = min(p_play, 0.80)
+    return p_play
+
+
+def _captain_ev_tree(cap_pts: float, vice_pts: float, p_c: float, p_v: float) -> dict[str, float]:
+    """C EV if C blanks: VC gets 2× (not 3× on a TC week). vice_ev = EV if you captained the vice."""
+    c_out = max(0.0, 1.0 - float(p_c))
+    v_out = max(0.0, 1.0 - float(p_v))
+    return {
+        "captain_ev": round(2.0 * cap_pts + 2.0 * vice_pts * c_out, 2),
+        "vice_ev": round(2.0 * vice_pts + 2.0 * cap_pts * v_out, 2),
+        "triple_ev": round(3.0 * cap_pts + 2.0 * vice_pts * c_out, 2),
+    }
+
+
+def _this_gw_pts(p: dict[str, Any], objective: str) -> float:
+    if str(objective).startswith("gw:") or objective == "xpts_gw":
+        return _obj(p, objective)
+    if p.get("xpts_next") is not None:
+        return float(p.get("xpts_next") or 0) * _minutes_mult(p)
+    if p.get("xpts_gw") is not None:
+        return float(p.get("xpts_gw") or 0) * _minutes_mult(p)
+    return _obj(p, objective)
+
+
 def _pick_captain(xi: list[dict[str, Any]], objective: str) -> dict[str, Any]:
     """Captain on this-GW xPts when available (not the 5-GW hold)."""
     eligible = [p for p in xi if p.get("_xi_ok") is not False] or xi
-    if objective in {"xpts_gw", "xpts_next"}:
+    if str(objective).startswith("gw:") or objective in {"xpts_gw", "xpts_next"}:
         return max(eligible, key=lambda p: _obj(p, objective))
     if objective == "combined":
-        return max(eligible, key=lambda p: float(p.get("xpts_next") or p.get("xpts") or 0))
+        return max(eligible, key=lambda p: _this_gw_pts(p, "xpts_next"))
     if any(p.get("xpts_next") is not None for p in eligible):
-        return max(eligible, key=lambda p: float(p.get("xpts_next") or _obj(p, objective)))
+        return max(eligible, key=lambda p: _this_gw_pts(p, "xpts_next"))
     return max(eligible, key=lambda p: _obj(p, objective))
+
+
+def _pick_vice(
+    xi: list[dict[str, Any]],
+    captain: dict[str, Any] | None,
+    objective: str,
+) -> dict[str, Any] | None:
+    eligible = [p for p in xi if p.get("_xi_ok") is not False] or list(xi)
+    if captain is not None:
+        eligible = [p for p in eligible if p.get("fpl_id") != captain.get("fpl_id")]
+    if not eligible:
+        return None
+    return max(eligible, key=lambda p: _this_gw_pts(p, objective))

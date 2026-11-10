@@ -161,6 +161,56 @@ def download_fbref(season: str, settings: Settings | None = None, force: bool = 
     return dest
 
 
+FBREF_DOWNLOAD_NAMES = (
+    ("keepersadv.html", ("goalkeeper", "keepersadv", "keeper stats")),
+    ("possession.html", ("possession stats", "possession")),
+    ("defense.html", ("defensive action",)),
+    ("stats.html", ("player stats", "standard stats")),
+)
+
+
+def copy_fbref_from_downloads(
+    season: str,
+    settings: Settings | None = None,
+    downloads: Path | None = None,
+) -> list[str]:
+    """Copy newest matching FBref HTML from Downloads into ``data/raw/fbref/{season}``."""
+    settings = settings or load_settings()
+    dest = settings.data_dir / "raw" / "fbref" / season
+    dest.mkdir(parents=True, exist_ok=True)
+    src_dir = downloads or Path.home() / "Downloads"
+    if not src_dir.is_dir():
+        return []
+    copied: list[str] = []
+    used: set[Path] = set()
+    htmls = [p for p in src_dir.iterdir() if p.is_file() and p.suffix.lower() in {".html", ".htm"}]
+    for dest_name, needles in FBREF_DOWNLOAD_NAMES:
+        matches = []
+        for p in htmls:
+            if p in used:
+                continue
+            low = p.name.lower()
+            if "fbref" not in low and "premier league" not in low:
+                continue
+            if any(n in low for n in needles):
+                if dest_name == "stats.html" and any(
+                    x in low for x in ("goalkeeper", "defensive", "possession", "keepersadv")
+                ):
+                    continue
+                matches.append(p)
+        if not matches:
+            continue
+        newest = max(matches, key=lambda p: p.stat().st_mtime)
+        target = dest / dest_name
+        if target.exists() and target.stat().st_mtime >= newest.stat().st_mtime and target.stat().st_size >= newest.stat().st_size:
+            used.add(newest)
+            continue
+        target.write_bytes(newest.read_bytes())
+        used.add(newest)
+        copied.append(dest_name)
+    return copied
+
+
 def _player_col(df: pd.DataFrame) -> str:
     return next(c for c in df.columns if "player" in str(c).lower())
 
@@ -169,18 +219,34 @@ def _squad_col(df: pd.DataFrame) -> str | None:
     return next((c for c in df.columns if "squad" in str(c).lower()), None)
 
 
-def _stat_rows(html: str, table_id: str) -> list[dict[str, str]]:
-    m = re.search(rf'<table[^>]*id=["\']{table_id}["\'][\s\S]*?</table>', html, flags=re.I)
-    if not m:
-        return []
+def _unwrap_fbref_comments(html: str) -> str:
+    return re.sub(r"<!--([\s\S]*?)-->", r"\1", html)
+
+
+def _rows_from_table_html(table_html: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    for tr in re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", m.group(0), flags=re.I):
+    for tr in re.findall(r"<tr[^>]*>([\s\S]*?)</tr>", table_html, flags=re.I):
         cells: dict[str, str] = {}
         for stat, inner in re.findall(r'data-stat="([^"]+)"[^>]*>([\s\S]*?)</t[dh]>', tr, flags=re.I):
             cells[stat] = re.sub(r"<[^>]+>", "", inner).replace("\xa0", " ").strip()
         if cells:
             rows.append(cells)
     return rows
+
+
+def _stat_tables(html: str, table_id: str) -> list[list[dict[str, str]]]:
+    html = _unwrap_fbref_comments(html)
+    found: list[list[dict[str, str]]] = []
+    for m in re.finditer(rf'<table[^>]*id=["\']{table_id}["\'][\s\S]*?</table>', html, flags=re.I):
+        rows = _rows_from_table_html(m.group(0))
+        if rows:
+            found.append(rows)
+    return found
+
+
+def _stat_rows(html: str, table_id: str) -> list[dict[str, str]]:
+    tables = _stat_tables(html, table_id)
+    return tables[0] if tables else []
 
 
 def _num(rows: list[dict[str, str]], *keys: str) -> pd.Series:
@@ -260,31 +326,46 @@ def parse_squad_possession(dest: Path) -> pd.DataFrame:
     return out
 
 
+def _keepersadv_from_rows(rows: list[dict[str, str]]) -> pd.DataFrame:
+    players = [r for r in rows if r.get("player") and r.get("player") not in {"Player", "Squad"}]
+    if not players:
+        return pd.DataFrame()
+    nineties = _num(players, "minutes_90s")
+    minutes = _num(players, "minutes")
+    minutes = minutes.where(minutes.notna(), nineties * 90.0)
+    psxg = _num(players, "gk_psxg", "psxg", "PSxG", "psxg_plusminus")
+    psxg_net = _num(players, "gk_psxg_net", "psxg_net", "PSxG+/-", "gk_psxg_plusminus")
+    psxg_net90 = _num(players, "gk_psxg_net_per90", "psxg_net_per90", "PSxG+/-/90", "gk_psxg_net90")
+    psxg_net90 = psxg_net90.where(psxg_net90.notna(), psxg_net / nineties.replace(0, np.nan))
+    return pd.DataFrame(
+        {
+            "player": [r.get("player", "") for r in players],
+            "squad": [r.get("team") or r.get("squad") or "" for r in players],
+            "minutes_gk": minutes,
+            "psxg": psxg,
+            "psxg_net": psxg_net,
+            "psxg_net90": psxg_net90,
+        }
+    ).drop_duplicates("player")
+
+
 def parse_keepersadv(dest: Path) -> pd.DataFrame:
     path = dest / "keepersadv.html"
     if not path.exists():
         return pd.DataFrame()
     html = path.read_text(encoding="utf-8")
-    rows = [r for r in _stat_rows(html, "stats_keeper_adv") if r.get("player") and r.get("player") != "Player"]
-    if rows:
-        nineties = _num(rows, "minutes_90s")
-        minutes = _num(rows, "minutes")
-        minutes = minutes.where(minutes.notna(), nineties * 90.0)
-        psxg = _num(rows, "gk_psxg")
-        psxg_net = _num(rows, "gk_psxg_net")
-        psxg_net90 = _num(rows, "gk_psxg_net_per90")
-        psxg_net90 = psxg_net90.where(psxg_net90.notna(), psxg_net / nineties.replace(0, np.nan))
-        out = pd.DataFrame(
-            {
-                "player": [r.get("player", "") for r in rows],
-                "squad": [r.get("team") or r.get("squad") or "" for r in rows],
-                "minutes_gk": minutes,
-                "psxg": psxg,
-                "psxg_net": psxg_net,
-                "psxg_net90": psxg_net90,
-            }
-        )
-        return out.drop_duplicates("player")
+    best = pd.DataFrame()
+    for rows in _stat_tables(html, "stats_keeper_adv"):
+        cand = _keepersadv_from_rows(rows)
+        if cand.empty:
+            continue
+        score = int(cand["psxg"].notna().sum()) + int(cand["psxg_net"].notna().sum())
+        if best.empty or score > int(best["psxg"].notna().sum()) + int(best["psxg_net"].notna().sum()):
+            best = cand
+        if score > 0:
+            return cand
+    if not best.empty:
+        return best
     gk = _pick_table(_tables_from_html(html), {"player", "psxg"})
     if gk is None or not any("player" in str(c).lower() for c in gk.columns):
         return pd.DataFrame()
@@ -293,9 +374,9 @@ def parse_keepersadv(dest: Path) -> pd.DataFrame:
     nineties = _col(gk, "90s")
     minutes = _col(gk, "Min", "Minutes")
     minutes = minutes.where(minutes.notna(), nineties * 90.0)
-    psxg = _col(gk, "Expected_PSxG", "PSxG")
-    psxg_net = _col(gk, "Expected_PSxG+/-", "PSxG+/-")
-    psxg_net90 = _col(gk, "Expected_/90")
+    psxg = _col(gk, "Expected_PSxG", "PSxG", "gk_psxg")
+    psxg_net = _col(gk, "Expected_PSxG+/-", "PSxG+/-", "gk_psxg_net")
+    psxg_net90 = _col(gk, "Expected_/90", "PSxG+/-/90", "gk_psxg_net_per90")
     psxg_net90 = psxg_net90.where(psxg_net90.notna(), psxg_net / nineties.replace(0, np.nan))
     out = pd.DataFrame(
         {
@@ -415,8 +496,18 @@ def map_fbref_to_fpl(fbref: pd.DataFrame, fpl: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def load_fbref(season: str, settings: Settings | None = None, force: bool = False) -> int:
+def load_fbref(
+    season: str,
+    settings: Settings | None = None,
+    force: bool = False,
+    *,
+    from_downloads: bool = True,
+) -> int:
     settings = settings or load_settings()
+    if from_downloads:
+        copied = copy_fbref_from_downloads(season, settings)
+        if copied:
+            print(f"copied FBref from Downloads: {', '.join(copied)}")
     dest = download_fbref(season, settings, force=force)
     parsed = parse_fbref_folder(dest)
     conn = connect(settings)
@@ -477,12 +568,18 @@ def load_fbref(season: str, settings: Settings | None = None, force: bool = Fals
             f"WARNING: FBref parsed rows but mapped 0/{len(fpl) if not fpl.empty else 0} "
             f"FPL players for {season}. Check name/team matching or re-save tables."
         )
-    if "psxg" in parsed.columns and parsed["psxg"].notna().sum() == 0:
+    gk = parse_keepersadv(dest)
+    gk_n = 0 if gk.empty else int(len(gk))
+    psxg_n = 0 if gk.empty else int(gk["psxg"].notna().sum())
+    if gk_n and psxg_n == 0:
         print(
-            "FBref keepersadv HTML has empty PSxG cells (common when the page is saved "
-            "before Opta columns load). Team tilt will use possession % instead of Att 3rd. "
-            "Re-save keepersadv/possession after the full table appears, then rerun fbref."
+            f"WARNING: keepersadv parsed {gk_n} keepers but 0 PSxG values "
+            "(Opta cells are usually blank if you save before the table fills). "
+            "GK PSxG stay unused; possession % is the tilt fallback. "
+            "Re-save keepersadv.html after PSxG numbers appear, copy from Downloads if needed, then rerun fbref."
         )
+    elif gk_n:
+        print(f"FBref PSxG: {psxg_n}/{gk_n} keepers have values")
     return int(n)
 
 

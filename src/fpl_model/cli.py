@@ -75,11 +75,19 @@ def main(argv: list[str] | None = None) -> int:
     fb = sub.add_parser("fbref", help="Load FBref stats/defence/keepersadv/possession HTML and map to FPL ids")
     fb.add_argument("--season", required=True)
     fb.add_argument("--force", action="store_true")
+    fb.add_argument(
+        "--from-downloads",
+        action="store_true",
+        default=True,
+        help="Copy newest FBref HTML from ~/Downloads into data/raw/fbref (default on)",
+    )
+    fb.add_argument("--no-from-downloads", action="store_true", help="Do not copy from ~/Downloads")
 
     u = sub.add_parser("update", help="Refresh live FPL + Understat + FBref, then score the next 5 GWs")
     u.add_argument("--season", default=None)
     u.add_argument("--skip-understat", action="store_true")
     u.add_argument("--skip-fbref", action="store_true")
+    u.add_argument("--no-from-downloads", action="store_true", help="Do not copy FBref HTML from ~/Downloads")
 
     f = sub.add_parser("features", help="Build as-of features for gameweek T (uses GW < T only)")
     f.add_argument("--season", required=True)
@@ -198,7 +206,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "fbref":
         from fpl_model.ingest.fbref import load_fbref
 
-        n = load_fbref(args.season, settings, force=args.force)
+        from_dl = not getattr(args, "no_from_downloads", False)
+        n = load_fbref(args.season, settings, force=args.force, from_downloads=from_dl)
         print(f"fbref mapped {n} FPL players")
         return 0
 
@@ -213,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.skip_fbref:
             print("WARNING: --skip-fbref set; DefCon priors / tilt / PSxG may be thin early season.")
         else:
-            n_fb = load_fbref(season, settings, force=True)
+            n_fb = load_fbref(season, settings, force=True, from_downloads=not args.no_from_downloads)
             print(f"fbref mapped {n_fb} FPL players")
             if n_fb == 0:
                 print("WARNING: continuing without FBref — save HTML under data/raw/fbref and rerun fbref.")
@@ -473,7 +482,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "calibrate":
         from fpl_model.backtest.walkforward import calibrate_asof
 
-        pack = calibrate_asof(args.season, args.as_of, settings)
+        pack = calibrate_asof(args.season, args.as_of, settings, persist=True)
         if pack.get("empty"):
             print(pack.get("reason") or "no calibration rows")
             return 1

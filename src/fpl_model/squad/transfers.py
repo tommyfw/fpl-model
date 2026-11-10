@@ -6,12 +6,13 @@ from typing import Any
 
 from fpl_model.scoring.clean_sheet import blank_events, parse_fixtures_json
 from fpl_model.squad.chips import ft_plan, recommend_chips
-from fpl_model.squad.optimize import SQUAD_NEED, _obj, _price, build_squad, pick_xi
+from fpl_model.squad.optimize import SQUAD_NEED, _minutes_mult, _obj, _price, build_squad, pick_xi
 
 # Hits need clear edge after the −4; early season is noisy.
 HIT_MIN_NET = 1.5
 WANT_MAX = 5
-HORIZON_PLAN = 3
+HORIZON_PLAN = 5
+HORIZON_PERSIST = 0.97
 
 
 def _money_legal(bank_after: float, spent_after: float, budget: float) -> bool:
@@ -20,6 +21,22 @@ def _money_legal(bank_after: float, spent_after: float, budget: float) -> bool:
 
 def _money_broke(bank: float, spent: float, budget: float) -> bool:
     return bank < -1e-9 or spent > budget + 1e-9
+
+
+def chip_rebuild_budget(
+    budget: float,
+    spent: float,
+    bank: float,
+    max_value: float | None = None,
+) -> tuple[float, float]:
+    """Optimizer spent cap and FPL purse (current 15 + ITB)."""
+    spent_f = float(spent)
+    bank_f = float(bank)
+    purse = round(spent_f + bank_f, 1)
+    cap = round(max(float(budget), spent_f) + bank_f, 1)
+    if max_value is not None:
+        cap = round(min(cap, float(max_value)), 1)
+    return cap, purse
 
 
 def suggest_transfers(
@@ -251,6 +268,39 @@ def suggest_transfers(
     }
 
 
+def _price_rank_adj(buy: dict[str, Any], sell: dict[str, Any]) -> float:
+    adj = 0.0
+    bpc = buy.get("price_change")
+    if bpc is not None:
+        adj += 0.4 * float(bpc)
+    spc = sell.get("price_change")
+    if spc is not None:
+        adj -= 0.25 * float(spc)
+    return adj
+
+
+def _buy_risk_haircut(buy: dict[str, Any]) -> float:
+    cut = 0.0
+    risk = buy.get("minutes_risk") if isinstance(buy.get("minutes_risk"), dict) else {}
+    if risk.get("level") == "risk":
+        cut += 3.0
+    elif risk.get("level") == "watch":
+        cut += 0.5
+    av = buy.get("availability")
+    if av is not None and float(av) < 0.55:
+        cut += 1.5
+    cut += max(0.0, 1.0 - _minutes_mult(buy)) * 1.5
+    return cut
+
+
+def _move_gain(buy: dict[str, Any], sell: dict[str, Any], objective: str) -> float:
+    gain = _obj(buy, objective) - _obj(sell, objective)
+    if objective in {"xpts", "combined", "xpts_next", "xpts_gw"}:
+        gain += _price_rank_adj(buy, sell)
+        gain -= _buy_risk_haircut(buy)
+    return gain
+
+
 def _next_obj(p: dict[str, Any], objective: str) -> float:
     if objective == "xpts":
         v = p.get("xpts_next")
@@ -261,11 +311,14 @@ def _next_obj(p: dict[str, Any], objective: str) -> float:
 
 def _horizon_pts(p: dict[str, Any], n: int = HORIZON_PLAN) -> float:
     xs = p.get("xpts_gws")
+    hz = max(1, int(n))
     if isinstance(xs, (list, tuple)) and xs:
-        return float(sum(float(x or 0) for x in list(xs)[: max(1, n)]))
+        return float(
+            sum(float(x or 0) * (HORIZON_PERSIST**t) for t, x in enumerate(list(xs)[:hz]))
+        )
     nxt = p.get("xpts_next")
     if nxt is not None:
-        return float(nxt) * max(1, n)
+        return float(nxt) * sum(HORIZON_PERSIST**t for t in range(hz))
     return float(p.get("xpts") or 0)
 
 
@@ -299,7 +352,7 @@ def _finalize_suggestion(
 ) -> dict[str, Any]:
     gain = float(s["gain"])
     gain_next = 0.0
-    hz = min(HORIZON_PLAN, max(1, int(horizon_gws)))
+    hz = max(1, min(HORIZON_PLAN, int(horizon_gws)))
     gain_horizon = 0.0
     notes: list[str] = []
     for m in s["moves"]:
@@ -312,24 +365,29 @@ def _finalize_suggestion(
             notes.append(f"{sell['web_name']} blank next (out)")
         b_av = buy.get("availability")
         if b_av is not None and float(b_av) < 0.55:
-            notes.append(f"{buy['web_name']} avail {float(b_av):.0%}")
+            notes.append(f"START {buy['web_name']} avail {float(b_av):.0%}")
         s_av = sell.get("availability")
         if s_av is not None and float(s_av) < 0.55:
-            notes.append(f"{sell['web_name']} avail {float(s_av):.0%} (out)")
+            notes.append(f"START {sell['web_name']} avail {float(s_av):.0%} (out)")
         for who, tag in ((buy, ""), (sell, " (out)")):
             risk = who.get("minutes_risk") or {}
-            if risk.get("level") in {"watch", "risk"}:
-                lab = (risk.get("labels") or ["minutes risk"])[0]
-                notes.append(f"{who['web_name']} {lab}{tag}")
+            if risk.get("level") == "risk":
+                lab = (risk.get("labels") or ["will not start"])[0]
+                notes.append(f"START {who['web_name']} {lab}{tag}")
+            elif risk.get("level") == "watch":
+                lab = (risk.get("labels") or ["minutes watch"])[0]
+                notes.append(f"START {who['web_name']} {lab}{tag}")
         blanks = buy.get("blank_events") or []
         if blanks:
             notes.append(f"{buy['web_name']} blanks GW{','.join(str(b) for b in blanks)}")
         bpc = buy.get("price_change")
-        if bpc is not None and float(bpc) >= 0.2:
-            notes.append(f"{buy['web_name']} rising £{float(bpc):.1f}")
+        if bpc is not None and abs(float(bpc)) >= 0.2:
+            direction = "rising" if float(bpc) > 0 else "falling"
+            notes.append(f"PRICE {buy['web_name']} {direction} £{abs(float(bpc)):.1f}")
         spc = sell.get("price_change")
-        if spc is not None and float(spc) <= -0.2:
-            notes.append(f"{sell['web_name']} falling £{float(spc):.1f} (out)")
+        if spc is not None and abs(float(spc)) >= 0.2:
+            direction = "rising" if float(spc) > 0 else "falling"
+            notes.append(f"PRICE {sell['web_name']} {direction} £{abs(float(spc)):.1f} (out)")
 
     net = gain
     if hits and objective == "xpts":
@@ -337,6 +395,7 @@ def _finalize_suggestion(
     hit_caution = bool(hits and objective == "xpts")
     if hit_caution and net < HIT_MIN_NET:
         notes = list(notes) + ["hit needs a clear edge"]
+    notes.sort(key=lambda n: 0 if n.startswith("START ") else 1 if n.startswith("PRICE ") else 2)
     spent_after = s.get("spent_after")
     xi_after = None
     xi_gain = 0.0
@@ -607,7 +666,7 @@ def _restore_options(
             if not _team_ok(squad, buy, sell["fpl_id"]):
                 continue
             cost = _price(buy) - _price(sell)
-            gain = _obj(buy, objective) - _obj(sell, objective)
+            gain = _move_gain(buy, sell, objective)
             scored.append((sell, buy, cost, gain))
         cheaper = [x for x in scored if x[2] < -1e-9]
         picked: dict[int, tuple] = {}
@@ -654,7 +713,7 @@ def _restore_transfers(
         counts = Counter(p["position"] for p in trial)
         if any(counts[pos] != need for pos, need in SQUAD_NEED.items()):
             return
-        gain = sum(_obj(b, objective) - _obj(s, objective) for s, b, _ in picks)
+        gain = sum(_move_gain(b, s, objective) for s, b, _ in picks)
         packed.append(
             _pack_move(
                 gain=gain,
@@ -731,11 +790,11 @@ def _single_transfers(
                     continue
                 if spent_after > budget + 1e-9:
                     continue
-                if _obj(buy, objective) <= _obj(sell, objective) + 1e-9:
+                if _move_gain(buy, sell, objective) <= 1e-9:
                     continue
             if not _team_ok(squad, buy, sell["fpl_id"]):
                 continue
-            gain = _obj(buy, objective) - _obj(sell, objective)
+            gain = _move_gain(buy, sell, objective)
             out.append(
                 _pack_move(
                     gain=gain,
@@ -814,7 +873,7 @@ def _combo_transfers(
         teams = Counter(p.get("team_id") for p in trial if p.get("team_id") is not None)
         if any(v > 3 for v in teams.values()):
             continue
-        gain = sum(_obj(buys[i], objective) - _obj(sells[i], objective) for i in range(n))
+        gain = sum(_move_gain(buys[i], sells[i], objective) for i in range(n))
         out.append(
             _pack_move(
                 gain=gain,
@@ -842,9 +901,11 @@ def rebuild_on_chip(
     budget: float = 100.0,
     objective: str = "xpts",
     keep: set[int] | list[int] | None = None,
+    lock: set[int] | list[int] | None = None,
     exclude: set[int] | list[int] | None = None,
     exclude_teams: set[int] | list[int] | None = None,
     include: set[int] | list[int] | None = None,
+    max_value: float | None = None,
 ) -> dict[str, Any]:
     """Full 15 rebuild for wildcard or free hit (one-week xPts)."""
     name = str(chip or "wildcard").lower().replace(" ", "")
@@ -855,7 +916,7 @@ def rebuild_on_chip(
     if len(squad) != 15:
         return {"ok": False, "error": "need a full 15-man squad", "squad": []}
     spent = sum(_price(p) for p in squad)
-    cap = round(max(float(budget), spent) + float(bank), 1)
+    cap, purse = chip_rebuild_budget(budget, spent, bank, max_value)
     work = [dict(p) for p in pool]
     obj = objective
     if name == "freehit":
@@ -864,11 +925,12 @@ def rebuild_on_chip(
             nxt = p.get("xpts_next")
             if nxt is not None:
                 p["xpts"] = float(nxt)
+    force = {int(x) for x in (keep or [])} | {int(x) for x in (lock or [])}
     built = build_squad(
         work,
         budget=cap,
         objective=obj,
-        lock=keep,
+        lock=force,
         exclude=exclude,
         exclude_teams=exclude_teams,
         include=include,
@@ -880,8 +942,9 @@ def rebuild_on_chip(
     before_xi = pick_xi(squad, objective=obj)
     after_xi = pick_xi(after, objective=obj)
     built["chip"] = name
-    built["bank_after"] = round(cap - float(built.get("spent") or 0), 1)
+    built["bank_after"] = round(max(purse, cap) - float(built.get("spent") or 0), 1)
     built["from_spent"] = round(spent, 1)
+    built["max_value"] = round(float(max_value), 1) if max_value is not None else None
     built["xi_gain"] = round(
         float(after_xi.get("xi_objective") or 0) - float(before_xi.get("xi_objective") or 0), 2
     )

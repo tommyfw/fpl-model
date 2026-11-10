@@ -1,4 +1,4 @@
-from fpl_model.squad.optimize import build_squad, pick_xi
+from fpl_model.squad.optimize import _captain_ev_tree, build_squad, pick_xi
 
 
 def _p(fid, name, pos, price, xpts, overall, team_id, status="a"):
@@ -273,4 +273,71 @@ def test_trim_keeps_locked_player_outside_top():
     out = build_squad(players, budget=100.0, objective="xpts", lock=[9999])
     assert out["ok"]
     assert 9999 in {p["fpl_id"] for p in out["squad"]}
+
+
+def test_pick_xi_minutes_gate_benches_doubtful():
+    squad = [
+        _p(1, "GK1", "GK", 5.0, 4.0, 70, 1),
+        _p(2, "GK2", "GK", 4.0, 1.0, 40, 2),
+    ]
+    for i in range(5):
+        squad.append(_p(10 + i, f"DEF{i}", "DEF", 4.5, 3.0, 55, 10 + i))
+    for i in range(4):
+        squad.append(_p(20 + i, f"MID{i}", "MID", 6.0, 8.0, 70, 10 + i))
+    hurt = _p(29, "HurtMID", "MID", 6.0, 20.0, 80, 17)
+    hurt["xpts_gw"] = 12.0
+    hurt["availability"] = 0.2
+    hurt["minutes_risk"] = {"level": "risk", "labels": ["unlikely"]}
+    squad.append(hurt)
+    for i in range(3):
+        p = _p(30 + i, f"FWD{i}", "FWD", 7.0, 6.0, 65, 10 + i)
+        p["xpts_gw"] = 5.0
+        squad.append(p)
+    for p in squad:
+        p.setdefault("xpts_gw", 5.0)
+        p.setdefault("availability", 1.0)
+    pack = pick_xi(squad, objective="xpts_gw")
+    assert "HurtMID" not in {p["web_name"] for p in pack["xi"]}
+
+
+def test_pick_xi_prefers_nailed_back_three():
+    squad = [
+        _p(1, "GK1", "GK", 5.0, 4.0, 70, 1),
+        _p(2, "GK2", "GK", 4.0, 1.0, 40, 2),
+    ]
+    for i in range(3):
+        d = _p(10 + i, f"Fodder{i}", "DEF", 4.0, 6.0, 40, 10 + i)
+        d["xpts_gw"] = 6.0
+        d["availability"] = 0.2
+        d["minutes_risk"] = {"level": "risk", "labels": ["bench"]}
+        squad.append(d)
+    for i in range(2):
+        d = _p(20 + i, f"Nailed{i}", "DEF", 5.0, 4.0, 60, 20 + i)
+        d["xpts_gw"] = 4.0
+        d["availability"] = 1.0
+        squad.append(d)
+    for i in range(5):
+        m = _p(30 + i, f"MID{i}", "MID", 6.0, 8.0, 70, 30 + i)
+        m["xpts_gw"] = 8.0
+        squad.append(m)
+    for i in range(3):
+        f = _p(40 + i, f"FWD{i}", "FWD", 7.0, 5.0, 65, 40 + i)
+        f["xpts_gw"] = 5.0
+        squad.append(f)
+    pack = pick_xi(squad, objective="xpts_gw")
+    xi_def = [p for p in pack["xi"] if p["position"] == "DEF"]
+    assert sum(1 for p in xi_def if p["web_name"].startswith("Nailed")) >= 2
+    assert pack["captain_ev"] >= pack["vice_ev"]
+    assert pack["triple_ev"] == round(1.5 * pack["captain_ev"], 2) or abs(pack["triple_ev"] - 1.5 * pack["captain_ev"]) < 1e-6
+    assert pack["vice_captain"] is not None
+
+
+def test_captain_ev_includes_vice_if_captain_blanks():
+    ev = _captain_ev_tree(cap_pts=8.0, vice_pts=6.0, p_c=0.5, p_v=1.0)
+    assert ev["captain_ev"] == 22.0
+    assert ev["triple_ev"] == 30.0
+    ev_full = _captain_ev_tree(8.0, 6.0, 1.0, 1.0)
+    assert ev_full["captain_ev"] == 16.0
+    assert ev_full["triple_ev"] == 24.0
+    assert ev_full["vice_ev"] == 12.0
 

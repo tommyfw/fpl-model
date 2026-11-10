@@ -22,6 +22,11 @@ const state = {
   cache: new Map(),
   horizonGws: 5,
   clubs: {},
+  chipsUsed: [],
+  horizonMode: "window",
+  compareId: null,
+  officialAsOf: null,
+  betaAsOf: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -117,12 +122,14 @@ function loadMyTeam() {
     state.myTeam = (raw.ids || []).map(Number);
     if (raw.bank != null) $("team-bank").value = raw.bank;
     if (raw.budget != null && $("team-budget")) $("team-budget").value = raw.budget;
+    if (raw.wcMax != null && $("wc-max-value")) $("wc-max-value").value = raw.wcMax;
     if (raw.ft != null) $("team-ft").value = raw.ft;
     if (raw.want != null && $("team-want")) $("team-want").value = raw.want;
     if (raw.entry != null && $("team-entry")) $("team-entry").value = raw.entry;
     const teamIds = new Set(state.myTeam);
     state.teamLock = new Set((raw.keep || []).map(Number).filter((id) => teamIds.has(id)));
     state.plan = null;
+    if (Array.isArray(raw.chipsUsed)) state.chipsUsed = raw.chipsUsed;
     if (raw.plan && Array.isArray(raw.plan.ids) && Array.isArray(raw.plan.moves)) {
       const rebuilt = applyPairs([...raw.plan.ids], raw.plan.moves);
       if (sameIds(rebuilt, state.myTeam)) state.plan = { ids: raw.plan.ids.map(Number), bank: Number(raw.plan.bank || 0), moves: raw.plan.moves.map((m) => ({ out: Number(m.out), in: Number(m.in) })) };
@@ -143,9 +150,11 @@ function saveMyTeam() {
       keep: [...state.teamLock],
       bank: Number($("team-bank").value || 0),
       budget: Number($("team-budget") && $("team-budget").value) || 100,
+      wcMax: $("wc-max-value") && $("wc-max-value").value !== "" ? Number($("wc-max-value").value) : undefined,
       ft: Number($("team-ft").value || 1),
       want: Number($("team-want") && $("team-want").value) || 2,
       entry: Number($("team-entry") && $("team-entry").value) || undefined,
+      chipsUsed: state.chipsUsed || [],
       plan: state.plan,
     })
   );
@@ -227,6 +236,7 @@ function toggleExclude(id, ev) {
     $("xi-board").dataset.ready = "";
     buildXi();
   }
+  refreshWcCands();
 }
 
 function toggleExcludeTeam(teamId, ev) {
@@ -242,6 +252,7 @@ function toggleExcludeTeam(teamId, ev) {
     $("xi-board").dataset.ready = "";
     buildXi();
   }
+  refreshWcCands();
 }
 
 async function toggleLock(id, ev) {
@@ -263,6 +274,7 @@ async function toggleLock(id, ev) {
     $("xi-board").dataset.ready = "";
     await buildXi();
   }
+  refreshWcCands();
 }
 
 function toggleTeamMember(id, ev) {
@@ -291,6 +303,7 @@ function toggleKeep(id, ev) {
   if (state.teamLock.has(id)) state.teamLock.delete(id);
   else state.teamLock.add(id);
   saveMyTeam();
+  renderExcludePanel();
   if (state.selected === id && (state.tab === "players" || state.tab === "shortlist")) {
     selectPlayer(id);
   }
@@ -303,11 +316,10 @@ async function loadMeta() {
   const def = meta.default;
   state.season = def ? def.season : null;
   state.asOf = def ? def.as_of_gw : null;
-  const cur = (state.snapshots || []).find((s) => s.season === state.season && s.as_of_gw === state.asOf);
-  const beta = cur && cur.is_beta ? " · GW beta (FPL still on previous GW)" : "";
-  $("horizon-label").textContent = `Next ${meta.horizon_gws} GWs · as-of scores${beta}`;
   state.horizonGws = meta.horizon_gws || 5;
   state.clubs = meta.clubs || {};
+  state.officialAsOf = meta.official_as_of || null;
+  state.betaAsOf = meta.beta_as_of || null;
   fillSeason();
   fillAsOf();
   fillTeamEvent();
@@ -325,8 +337,18 @@ function setHorizonNote() {
   const el = $("horizon-label");
   if (!el) return;
   const cur = (state.snapshots || []).find((s) => s.season === state.season && Number(s.as_of_gw) === Number(state.asOf));
-  const base = el.textContent.split(" · GW beta")[0];
-  el.textContent = base + (cur && cur.is_beta ? " · GW beta (FPL still on previous GW)" : "");
+  const hz =
+    state.horizonMode === "next"
+      ? "This GW xPts (Overall still 5-GW)"
+      : `Next ${state.horizonGws || 5} GWs`;
+  let asof = `as-of GW${state.asOf}`;
+  if (cur && cur.is_beta) {
+    const off = state.officialAsOf && state.officialAsOf.as_of_gw;
+    asof += off ? ` beta (official GW${off})` : " beta (FPL still on previous GW)";
+  } else {
+    asof += " official";
+  }
+  el.textContent = `${hz} · ${asof}`;
 }
 
 function fillSeason() {
@@ -356,15 +378,17 @@ function fillClubs() {
     state.team = sel.value;
   }
   const xiSel = $("xi-exclude-club");
-  if (xiSel) {
-    const keep = xiSel.value;
-    xiSel.innerHTML =
+  const wcSel = $("wc-exclude-club");
+  [xiSel, wcSel].forEach((box) => {
+    if (!box) return;
+    const keep = box.value;
+    box.innerHTML =
       `<option value="">Club…</option>` +
       clubs
         .map((c) => `<option value="${c.team_id}">${c.short_name}</option>`)
         .join("");
-    if ([...xiSel.options].some((o) => o.value === keep)) xiSel.value = keep;
-  }
+    if ([...box.options].some((o) => o.value === keep)) box.value = keep;
+  });
 }
 
 function fillAsOf() {
@@ -422,7 +446,7 @@ function rowHtml(p, i) {
       </span>
       <span class="c-num">${fmt(p.overall)}</span>
       <span class="c-num">${fmt(p.upside)}</span>
-      <span class="c-num">${fmt(p.xpts, 1)}</span>
+      <span class="c-num">${fmt(state.horizonMode === "next" ? p.xpts_next : p.xpts, 1)}</span>
       <span class="c-act"><span class="badge ${badgeClass(p.action)}">${p.action}</span></span>
     </div>`;
 }
@@ -452,7 +476,8 @@ async function loadPlayers() {
     return;
   }
   const q = $("search").value.trim();
-  const players = await fetchPlayers({ q, team: state.team });
+  const sort = state.horizonMode === "next" && state.sort === "xpts" ? "xpts_next" : state.sort;
+  const players = await fetchPlayers({ q, team: state.team, sort });
   $("empty").classList.toggle("hidden", players.length > 0);
   $("rows").innerHTML = players.map((p, i) => rowHtml(p, i)).join("");
   if (players.length && (state.selected == null || !players.some((p) => p.fpl_id === state.selected))) {
@@ -501,6 +526,20 @@ async function selectPlayer(id, { stay } = {}) {
     id: String(id),
   });
   const p = await (await fetch(`/api/player?${params}`)).json();
+  if (state.compareId && Number(state.compareId) !== Number(id)) {
+    const other = await (
+      await fetch(
+        `/api/player?${new URLSearchParams({
+          season: state.season,
+          as_of: String(state.asOf),
+          id: String(state.compareId),
+        })}`
+      )
+    ).json();
+    $("card").innerHTML =
+      compareDelta(p, other) + `<div class="compare-grid">${cardMarkup(p)}${cardMarkup(other)}</div>`;
+    return;
+  }
   renderCard(p);
 }
 
@@ -552,7 +591,52 @@ function statCell(label, value, d = 0) {
   return `<div class="stat"><span>${label}</span><b>${fmt(value, d)}</b></div>`;
 }
 
-function renderCard(p) {
+function lastWeekLine(p) {
+  const lw = p.last_week;
+  if (!lw || (lw.pred == null && lw.actual == null)) return "";
+  return `<p class="last-week">Last GW${lw.event}: raw forecast ${fmt(lw.pred, 1)} xPts · actual ${lw.actual == null ? "—" : lw.actual} pts</p>`;
+}
+
+function thisGwLine(p) {
+  const shown = p.xpts_next;
+  const raw = p.xpts_next_raw;
+  const nudge = p.cal_nudge;
+  if (shown == null) return `<div class="xpts">This GW —</div>`;
+  if (raw != null && nudge && Math.abs(nudge) >= 0.05) {
+    const sign = nudge > 0 ? "+" : "";
+    return `<div class="xpts">This GW ${fmt(shown, 2)} <span style="font-size:.72rem;color:var(--muted)">(raw ${fmt(raw, 2)}, ${sign}${fmt(nudge, 2)} cal)</span></div>`;
+  }
+  return `<div class="xpts">This GW ${fmt(shown, 2)}</div>`;
+}
+
+function playerGwStrip(p) {
+  const xs = p.xpts_gws || (p.card && p.card.xpts_gws) || [];
+  if (!xs.length) return "";
+  const t0 = Number(state.asOf) || 0;
+  return `<p class="stat-note">Packed xPts: ${xs.map((x, i) => `GW${t0 + i} ${fmt(x, 1)}`).join(" · ")}</p>`;
+}
+
+function compareDelta(a, b) {
+  const rows = [
+    ["xPts 5GW", a.xpts, b.xpts, 1],
+    ["This GW", a.xpts_next, b.xpts_next, 1],
+    ["Overall", a.overall, b.overall, 1],
+    ["Minutes M", a.M, b.M, 0],
+    ["Fixtures O", a.O, b.O, 0],
+    ["£", a.price, b.price, 1],
+    ["Owned %", a.selected_by_percent, b.selected_by_percent, 1],
+  ];
+  const cells = rows
+    .map(([lab, x, y, d]) => {
+      const dx = x != null && y != null ? x - y : null;
+      const cls = dx == null ? "" : dx > 0.05 ? "plus" : dx < -0.05 ? "minus" : "";
+      return `<div class="up-item"><span>${lab}</span><b class="${cls}">${fmt(x, d)} / ${fmt(y, d)}${dx == null ? "" : ` (${dx > 0 ? "+" : ""}${fmt(dx, d)})`}</b></div>`;
+    })
+    .join("");
+  return `<div class="compare-delta"><p class="stat-note">${a.web_name} vs ${b.web_name} (Δ = left − right)</p><div class="up-grid">${cells}</div></div>`;
+}
+
+function cardMarkup(p) {
   const full = [p.first_name, p.second_name].filter(Boolean).join(" ");
   const own = p.selected_by_percent != null ? `${fmt(p.selected_by_percent)}% owned` : "";
   const parts = (p.card && p.card.upside_parts) || {};
@@ -586,6 +670,9 @@ function renderCard(p) {
     flags.understat === false ? `<span class="badge hold">No Understat map</span>` : "",
     flags.thin_sample ? `<span class="badge hold">Thin sample</span>` : "",
     flags.no_fbref ? `<span class="badge hold">No FBref</span>` : "",
+    p.position === "GK" && st.psxg_net90 == null && st.psxg == null
+      ? `<span class="badge hold">PSxG missing</span>`
+      : "",
     ...minutesRiskBadges(p),
   ].filter(Boolean).join(" ");
   const partsXp = (p.card && p.card.xpts_parts) || {};
@@ -609,7 +696,11 @@ function renderCard(p) {
       : p.position === "DEF"
         ? `${statCell("Mins", st.minutes)}${statCell("Starts", st.starts)}${statCell("CS", st.cs)}${statCell("DefCon%", (st.defcon_hit_rate || 0) * 100, 0)}`
         : `${statCell("Mins", st.minutes)}${statCell("Starts", st.starts)}${statCell("DefCon%", (st.defcon_hit_rate || 0) * 100, 0)}`;
-  $("card").innerHTML = `
+  const gkPsxg =
+    p.position === "GK"
+      ? `<div class="stats-grid" style="margin-top:.4rem">${statCell("PSxG", st.psxg, 2)}${statCell("PSxG±/90", st.psxg_net90, 2)}${statCell("Stop", st.shot_stopping, 2)}</div>`
+      : "";
+  return `
     <div class="hero">
       <div class="who">
         <h2>${p.web_name}</h2>
@@ -639,13 +730,18 @@ function renderCard(p) {
           }
           <button type="button" data-exclude="${p.fpl_id}">${excludeLabel}</button>
           <button type="button" data-lock="${p.fpl_id}">${state.lock.has(p.fpl_id) ? "Remove from include" : "Include in XI"}</button>
+          <button type="button" data-compare="${p.fpl_id}">${
+            Number(state.compareId) === Number(p.fpl_id) ? "Clear compare" : "Compare"
+          }</button>
           ${clubBtn}
         </div>
+        ${lastWeekLine(p)}
       </div>
       <div class="big">
         <div class="overall">${fmt(p.overall)}</div>
         <div class="upside">Upside ${fmt(p.upside)}</div>
         <div class="xpts">xPts ${fmt(p.xpts, 2)} next window</div>
+        ${thisGwLine(p)}
       </div>
     </div>
     <div class="stats-grid">
@@ -657,6 +753,7 @@ function renderCard(p) {
     <div class="stats-grid" style="margin-top:.4rem">
       ${posRow}
     </div>
+    ${gkPsxg}
     <div class="stats-grid" style="margin-top:.4rem">
       ${statCell("npxG", st.npxg, 2)}
       ${statCell("npxA", st.npxa, 2)}
@@ -671,6 +768,7 @@ function renderCard(p) {
             .join("")}</div>`
         : ""
     }
+    ${playerGwStrip(p)}
     <div style="margin-top:.85rem;color:var(--muted);font-size:.78rem">Upcoming fixtures (${isDef ? "CS ease" : "attack ease"})</div>
     ${fixtureChips(p.fixtures || [], isDef ? "def" : "attack")}
     <div class="bars">
@@ -696,6 +794,10 @@ function renderCard(p) {
   `;
 }
 
+function renderCard(p) {
+  $("card").innerHTML = cardMarkup(p);
+}
+
 function weeklyXiStrip(data) {
   const xi = data.xi || [];
   const n = Math.max(0, ...xi.map((p) => (p.xpts_gws || []).length));
@@ -715,7 +817,7 @@ function minutesRiskOf(p) {
 function minutesRiskBadges(p) {
   const r = minutesRiskOf(p);
   if (!r || r.level === "ok") return [];
-  const lab = (r.labels && r.labels[0]) || "minutes";
+  const lab = (r.labels && r.labels[0]) || (r.level === "risk" ? "OUT / minutes" : "minutes watch");
   return [`<span class="badge ${r.level}">${lab}</span>`];
 }
 
@@ -737,9 +839,25 @@ function chip(p, objective, captainId, opts = {}) {
   const lockBit = opts.team
     ? ` · <button type="button" data-transfer-out="${p.fpl_id}">${state.transferOut === p.fpl_id ? "Cancel" : "Out"}</button> · <button type="button" data-keep="${p.fpl_id}">${state.teamLock.has(p.fpl_id) ? "Unlock" : "Lock"}</button>`
     : "";
-  const riskBit = risk && risk.level !== "ok" ? ` · ${(risk.labels && risk.labels[0]) || "mins"}` : "";
+  const riskBit =
+    p.fixture === "BLANK"
+      ? ` · <span class="badge blank">BLANK</span>`
+      : risk && risk.level === "risk"
+        ? ` · <span class="badge risk">${(risk.labels && risk.labels[0]) || "OUT"}</span>`
+        : risk && risk.level === "watch"
+          ? ` · <span class="badge watch">${(risk.labels && risk.labels[0]) || "watch"}</span>`
+          : "";
+  const capLab =
+    Number(captainId) === Number(p.fpl_id)
+      ? opts.triple
+        ? " (TC)"
+        : " (C)"
+      : opts.viceId != null && Number(opts.viceId) === Number(p.fpl_id)
+        ? " (VC)"
+        : "";
+  const loud = p.fixture === "BLANK" ? " BLANK" : risk && risk.level === "risk" ? " OUT" : "";
   return `<div class="chip${cap}${dim}${riskCls}${keep}${out}" data-id="${p.fpl_id}">
-    <div class="nm">${p.web_name}${cap ? " (C)" : ""}${pin}${opts.team && state.teamLock.has(p.fpl_id) ? " · locked" : ""}</div>
+    <div class="nm">${p.web_name}${capLab}${loud}${pin}${opts.team && state.teamLock.has(p.fpl_id) ? " · locked" : ""}</div>
     <div class="dt">${p.team || "—"} · £${fmt(p.price)} · ${metric}${fx}${riskBit}${lockBit}</div>
   </div>`;
 }
@@ -856,67 +974,138 @@ async function loadPlayersByIds(ids) {
 }
 
 async function renderExcludePanel() {
-  const empty = $("xi-exclude-empty");
-  const list = $("xi-exclude-list");
-  const teamsEl = $("xi-exclude-teams");
-  const incEl = $("xi-include-list");
-  const lockEl = $("xi-lock-list");
-  if (!empty || !list) return;
+  const mounts = [
+    {
+      empty: "xi-exclude-empty",
+      list: "xi-exclude-list",
+      teams: "xi-exclude-teams",
+      inc: "xi-include-list",
+      lock: "xi-lock-list",
+    },
+    {
+      empty: "wc-exclude-empty",
+      list: "wc-exclude-list",
+      teams: "wc-exclude-teams",
+      inc: "wc-include-list",
+      lock: "wc-lock-list",
+      keep: "wc-keep-list",
+    },
+  ];
   const teamIds = [...state.excludeTeams];
   const ids = [...state.exclude];
   const allowIds = [...state.include];
   const lockIds = [...state.lock];
-  if (!teamIds.length && !ids.length && !allowIds.length && !lockIds.length) {
-    empty.classList.remove("hidden");
-    list.innerHTML = "";
-    if (teamsEl) teamsEl.innerHTML = "";
-    if (incEl) incEl.innerHTML = "";
-    if (lockEl) lockEl.innerHTML = "";
+  const keepIds = [...state.teamLock];
+  const playersById = new Map();
+  const need = [...new Set([...ids, ...allowIds, ...lockIds, ...keepIds])];
+  if (need.length && state.season) {
+    (await loadPlayersByIds(need)).forEach((p) => playersById.set(p.fpl_id, p));
+  }
+  for (const m of mounts) {
+    const empty = $(m.empty);
+    const list = $(m.list);
+    if (!list) continue;
+    const hasAny =
+      teamIds.length || ids.length || allowIds.length || lockIds.length || (m.keep && keepIds.length);
+    if (empty) empty.classList.toggle("hidden", !!hasAny);
+    if ($(m.teams)) {
+      $(m.teams).innerHTML = teamIds
+        .map((tid) => {
+          const c = clubInfo(tid);
+          const name = c ? c.short_name : `Team ${tid}`;
+          return `<div class="chip excluded"><div class="nm">${name}</div><div class="dt">club banned · <button type="button" data-exclude-team="${tid}">Allow</button></div></div>`;
+        })
+        .join("");
+    }
+    list.innerHTML = ids
+      .map((id) => playersById.get(id))
+      .filter(Boolean)
+      .map(
+        (p) =>
+          `<div class="chip excluded" data-id="${p.fpl_id}">
+          <div class="nm">${p.web_name}</div>
+          <div class="dt">${p.position} · ${p.team || "—"} · <button type="button" data-exclude="${p.fpl_id}">Allow</button></div>
+        </div>`
+      )
+      .join("");
+    if ($(m.inc)) {
+      $(m.inc).innerHTML = allowIds
+        .map((id) => playersById.get(id))
+        .filter(Boolean)
+        .map(
+          (p) =>
+            `<div class="chip" data-id="${p.fpl_id}">
+            <div class="nm">${p.web_name}</div>
+            <div class="dt">club exception · <button type="button" data-exclude="${p.fpl_id}">Use club ban</button></div>
+          </div>`
+        )
+        .join("");
+    }
+    if ($(m.lock)) {
+      $(m.lock).innerHTML = lockIds
+        .map((id) => playersById.get(id))
+        .filter(Boolean)
+        .map(
+          (p) =>
+            `<div class="chip keep" data-id="${p.fpl_id}">
+            <div class="nm">${p.web_name}</div>
+            <div class="dt">must include · <button type="button" data-lock="${p.fpl_id}">Remove</button></div>
+          </div>`
+        )
+        .join("");
+    }
+    if (m.keep && $(m.keep)) {
+      $(m.keep).innerHTML = keepIds
+        .map((id) => playersById.get(id))
+        .filter(Boolean)
+        .map(
+          (p) =>
+            `<div class="chip keep" data-id="${p.fpl_id}">
+            <div class="nm">${p.web_name}</div>
+            <div class="dt">keep from your 15 · <button type="button" data-keep="${p.fpl_id}">Unlock</button></div>
+          </div>`
+        )
+        .join("");
+    }
+  }
+}
+
+async function refreshWcCands() {
+  const box = $("wc-player-hits");
+  const qEl = $("wc-player-q");
+  if (!box || !qEl) return;
+  const q = (qEl.value || "").trim();
+  if (q.length < 2 || !state.season) {
+    box.innerHTML = "";
     return;
   }
-  empty.classList.add("hidden");
-  if (teamsEl) {
-    teamsEl.innerHTML = teamIds
-      .map((tid) => {
-        const c = clubInfo(tid);
-        const name = c ? c.short_name : `Team ${tid}`;
-        return `<div class="chip excluded"><div class="nm">${name}</div><div class="dt">club · bench fodder still ok · <button type="button" data-exclude-team="${tid}">Allow</button></div></div>`;
+  const params = new URLSearchParams({
+    season: state.season,
+    as_of: String(state.asOf),
+    q,
+    sort: "xpts",
+  });
+  try {
+    const data = await (await fetch(`/api/players?${params}`)).json();
+    const rows = (data.players || []).slice(0, 8);
+    box.innerHTML = rows
+      .map((p) => {
+        const banned = state.exclude.has(p.fpl_id);
+        const must = state.lock.has(p.fpl_id);
+        const inTeam = state.myTeam.includes(p.fpl_id);
+        const keep = state.teamLock.has(p.fpl_id);
+        return `<div class="chip${banned ? " excluded" : must || keep ? " keep" : ""}" data-id="${p.fpl_id}">
+          <div class="nm">${p.web_name}</div>
+          <div class="dt">${p.team || "—"} · £${fmt(p.price)} · ${fmt(p.xpts, 1)}
+            · <button type="button" data-exclude="${p.fpl_id}">${banned ? "Allow" : "Ban"}</button>
+            · <button type="button" data-lock="${p.fpl_id}">${must ? "Drop include" : "Must include"}</button>
+            ${inTeam ? ` · <button type="button" data-keep="${p.fpl_id}">${keep ? "Unlock" : "Keep"}</button>` : ""}
+          </div>
+        </div>`;
       })
       .join("");
-  }
-  const players = ids.length && state.season ? await loadPlayersByIds(ids) : [];
-  list.innerHTML = players
-    .map(
-      (p) =>
-        `<div class="chip excluded" data-id="${p.fpl_id}">
-          <div class="nm">${p.web_name}</div>
-          <div class="dt">${p.position} · ${p.team || "—"} · £${fmt(p.price)} · <button type="button" data-exclude="${p.fpl_id}">Allow</button></div>
-        </div>`
-    )
-    .join("");
-  if (incEl) {
-    const allowed = allowIds.length && state.season ? await loadPlayersByIds(allowIds) : [];
-    incEl.innerHTML = allowed
-      .map(
-        (p) =>
-          `<div class="chip" data-id="${p.fpl_id}">
-            <div class="nm">${p.web_name}</div>
-            <div class="dt">exception · ${p.team || "—"} · <button type="button" data-exclude="${p.fpl_id}">Use club ban</button></div>
-          </div>`
-      )
-      .join("");
-  }
-  if (lockEl) {
-    const locked = lockIds.length && state.season ? await loadPlayersByIds(lockIds) : [];
-    lockEl.innerHTML = locked
-      .map(
-        (p) =>
-          `<div class="chip" data-id="${p.fpl_id}">
-            <div class="nm">${p.web_name}</div>
-            <div class="dt">must include · ${p.team || "—"} · £${fmt(p.price)} · <button type="button" data-lock="${p.fpl_id}">Remove</button></div>
-          </div>`
-      )
-      .join("");
+  } catch {
+    box.innerHTML = "";
   }
 }
 
@@ -959,25 +1148,99 @@ function renderLineup(data) {
     return;
   }
   const capId = data.captain ? data.captain.fpl_id : null;
+  const viceId = data.vice_captain ? data.vice_captain.fpl_id : null;
   const xiByPos = { GK: [], DEF: [], MID: [], FWD: [] };
   data.xi.forEach((p) => xiByPos[p.position].push(p));
+  const chipBit =
+    data.chip === "bboost"
+      ? " · bench boost on"
+      : data.chip === "3xc"
+        ? " · triple captain on"
+        : "";
+  const evBit =
+    data.captain_ev != null
+      ? ` · C EV ${fmt(data.captain_ev, 1)} (VC-as-C ${fmt(data.vice_ev, 1)}) / 3XC ${fmt(data.triple_ev, 1)}`
+      : "";
   $("team-summary").textContent =
     `GW${data.event} XI ${data.formation} · ${fmt(data.xi_objective, 1)} xPts` +
-    (data.captain ? ` · C ${data.captain.web_name}` : "") +
+    (data.captain ? ` · ${data.triple ? "TC" : "C"} ${data.captain.web_name}` : "") +
+    (data.vice_captain ? ` · VC ${data.vice_captain.web_name}` : "") +
+    evBit +
+    chipBit +
     (data.offset ? ` · T+${data.offset} fixtures` : " · this GW fixtures");
+  const benchLabel = data.include_bench ? "Bench (playing — BB)" : "Bench";
+  const chipOpts = { team: true, triple: !!data.triple, viceId };
+  const scan = chipScanHtml(data.chip_scan, data.template);
   $("team-board").innerHTML = `
     <div class="pitch">
-      <h3>GW${data.event} starting XI (${data.formation})</h3>
-      <div class="xi-line">${xiByPos.GK.map((p) => chip(p, "xpts_gw", capId, { team: true })).join("")}</div>
-      <div class="xi-line">${xiByPos.DEF.map((p) => chip(p, "xpts_gw", capId, { team: true })).join("")}</div>
-      <div class="xi-line">${xiByPos.MID.map((p) => chip(p, "xpts_gw", capId, { team: true })).join("")}</div>
-      <div class="xi-line">${xiByPos.FWD.map((p) => chip(p, "xpts_gw", capId, { team: true })).join("")}</div>
-      <h3 style="margin-top:1rem">Bench</h3>
+      <h3>GW${data.event} starting XI (${data.formation})${chipBit}</h3>
+      <div class="xi-line">${xiByPos.GK.map((p) => chip(p, "xpts_gw", capId, chipOpts)).join("")}</div>
+      <div class="xi-line">${xiByPos.DEF.map((p) => chip(p, "xpts_gw", capId, chipOpts)).join("")}</div>
+      <div class="xi-line">${xiByPos.MID.map((p) => chip(p, "xpts_gw", capId, chipOpts)).join("")}</div>
+      <div class="xi-line">${xiByPos.FWD.map((p) => chip(p, "xpts_gw", capId, chipOpts)).join("")}</div>
+      <h3 style="margin-top:1rem">${benchLabel}</h3>
       <div class="xi-line">${data.bench.map((p) => chip(p, "xpts_gw", null, { team: true })).join("")}</div>
+      ${scan}
     </div>`;
 }
 
-async function optimiseLineup() {
+function freehitMeter(fh) {
+  if (!fh || fh.ok === false) return "";
+  const s = fh.score == null ? 0 : fh.score;
+  const cls = s >= 7 ? "plus" : s <= 3 ? "minus" : "";
+  const w = Math.max(0, Math.min(100, s * 10));
+  return `<div class="fh-meter">
+    <p><b class="${cls}">Free hit ${s}/10</b> · ${fh.verdict || ""} this GW
+      · yours ${fmt(fh.current_xi, 1)} → FH ${fmt(fh.fh_xi, 1)} (${signed(fh.xi_gain)})
+      · ${fh.n_out == null ? "—" : fh.n_out} changes</p>
+    <div class="fh-meter-bar" aria-hidden="true"><span style="width:${w}%"></span></div>
+    ${fh.reason ? `<p class="stat-note">${fh.reason}</p>` : ""}
+  </div>`;
+}
+
+function chipScanHtml(scan, template) {
+  const weeks = (scan && scan.weeks) || [];
+  const best = (scan && scan.best) || [];
+  const fh = freehitMeter((scan && scan.freehit) || null);
+  const rec = best.length ? `<p>${best.map((b) => b.reason).join(" · ")}</p>` : "";
+  const table = weeks.length
+    ? `<table><thead><tr><th>GW</th><th>XI</th><th>C</th><th>C EV</th><th>3XC</th><th>bench</th><th>BB</th></tr></thead><tbody>${weeks
+        .map(
+          (w) =>
+            `<tr><td>${w.event || w.offset}</td><td>${fmt(w.xi, 1)}</td><td>${w.captain || "—"}</td><td>${fmt(w.c_ev, 1)}</td><td>${fmt(w.triple_ev, 1)}</td><td>${fmt(w.bench, 1)}</td><td>${fmt(w.bb, 1)}</td></tr>`
+        )
+        .join("")}</tbody></table>`
+    : "";
+  const tmpl = template
+    ? `<p>Template overlap ${template.overlap}/${template.template_n || 15} · your XI owned ${fmt(template.you_owned_avg, 1)}% vs template ${fmt(template.template_owned_avg, 1)}%${
+        (template.differentials || []).length
+          ? ` · diffs: ${template.differentials.map((d) => `${d.web_name} ${fmt(d.selected_by_percent, 1)}%`).join(", ")}`
+          : ""
+      }</p>`
+    : "";
+  if (!fh && !rec && !table && !tmpl) return "";
+  return `<div class="chip-scan">${fh}${rec}${tmpl}${table}</div>`;
+}
+
+async function scanChips() {
+  saveMyTeam();
+  if (state.myTeam.length !== 15) {
+    $("transfer-board").innerHTML = `<p class="empty">Need a full 15-man squad to scan chips.</p>`;
+    return;
+  }
+  const params = new URLSearchParams({
+    season: state.season,
+    as_of: String(state.asOf),
+    squad: state.myTeam.join(","),
+  });
+  if (state.chipsUsed && state.chipsUsed.length) params.set("chips_used", state.chipsUsed.join(","));
+  const data = await (await fetch(`/api/chips?${params}`)).json();
+  $("transfer-board").innerHTML = data.ok
+    ? chipScanHtml(data)
+    : `<p class="empty">${data.error || "Could not scan chips."}</p>`;
+}
+
+async function optimiseLineup(chip) {
   saveMyTeam();
   const seq = ++state.teamViewSeq;
   if (state.myTeam.length !== 15) {
@@ -992,6 +1255,7 @@ async function optimiseLineup() {
   });
   const ev = $("team-event") && $("team-event").value;
   if (ev) params.set("event", ev);
+  if (chip) params.set("chip", chip);
   try {
     const res = await fetch(`/api/lineup?${params}`);
     const text = await res.text();
@@ -1026,6 +1290,7 @@ async function importFplTeam() {
     return;
   }
   state.myTeam = data.ids.map(Number);
+  state.chipsUsed = data.chips_used || [];
   $("team-bank").value = String(data.bank ?? 0);
   $("team-ft").value = String(data.free_transfers ?? 1);
   state.plan = null;
@@ -1087,6 +1352,7 @@ async function suggestTransfers() {
   const chips = (data.chips || []).length
     ? `<p class="empty" style="padding:0 0 .6rem">${data.chips.map((c) => `${c.chip}: ${c.reason}`).join(" · ")}</p>`
     : "";
+  const scanNote = data.chip_scan ? chipScanHtml(data.chip_scan) : "";
   let body;
   if (!data.suggestions.length) {
     const over =
@@ -1095,7 +1361,7 @@ async function suggestTransfers() {
         : data.overspend > 0.05
           ? `Squad is £${fmt(data.spent_now != null ? data.spent_now : data.spent)} vs max £${fmt(data.budget)} (£${fmt(data.overspend)} over). No path under the cap.`
           : "No improving transfers within bank / squad cap / team caps.";
-    body = `<p class="empty">${over}</p>${ftNote}${chips}`;
+    body = `<p class="empty">${over}</p>${ftNote}${chips}${scanNote}`;
   } else {
     const obj = data.objective;
     body =
@@ -1103,6 +1369,7 @@ async function suggestTransfers() {
       capNote +
       ftNote +
       chips +
+      scanNote +
       data.suggestions.map((s) => transferCardHtml(s, data.committed ? "Add to plan" : "Apply")).join("");
   }
   $("transfer-board").innerHTML = picker + committedHtml + body;
@@ -1339,9 +1606,25 @@ async function renderCalibrate() {
     const extra = [...(data.by_venue || []), ...(data.by_opponent || [])]
       .map((r) => `<tr><td>${r.label}</td><td>${r.n}</td><td>${fmt(r.mae, 2)}</td><td>${signed(r.bias)}</td></tr>`)
       .join("");
+    const bins = (data.table || [])
+      .map((r) => {
+        const bias =
+          r.bias != null
+            ? r.bias
+            : r.pred_mean != null && r.actual_mean != null
+              ? r.pred_mean - r.actual_mean
+              : null;
+        return `<tr><td>${r.bin != null ? r.bin : "bin"}</td><td>${r.n}</td><td>${fmt(r.pred_mean, 2)}</td><td>${fmt(r.actual_mean, 2)}</td><td>${signed(bias)}</td></tr>`;
+      })
+      .join("");
+    const binTable = bins
+      ? `<p class="empty" style="padding:.45rem 0 .2rem">Reliability (predicted xPts quantile vs actual)</p>
+         <table class="calibrate-table"><thead><tr><th>bin</th><th>n</th><th>pred</th><th>actual</th><th>bias</th></tr></thead><tbody>${bins}</tbody></table>`
+      : `<p class="empty" style="padding:.45rem 0 0">Need more GWs before quantile bins fill in.</p>`;
     box.innerHTML = `<div>
-      <p class="empty" style="padding:0 0 .35rem">xPts-next vs actual GW${data.as_of_gw} · n=${data.n} · MAE ${fmt(data.mae, 2)} · bias ${signed(data.bias)}</p>
+      <p class="empty" style="padding:0 0 .35rem">xPts-next vs actual GW${data.as_of_gw} · n=${data.n} · MAE ${fmt(data.mae, 2)} · bias ${signed(data.bias)} · this-GW cards use −½ last bias (clipped)</p>
       <table class="calibrate-table"><thead><tr><th></th><th>n</th><th>MAE</th><th>bias</th></tr></thead><tbody>${rows.join("")}${extra}</tbody></table>
+      ${binTable}
     </div>`;
   } catch {
     box.innerHTML = "";
@@ -1363,10 +1646,7 @@ async function rebuildChip(chip) {
     budget: ($("team-budget") && $("team-budget").value) || "100",
     objective: $("team-objective").value,
   });
-  if (state.teamLock.size) params.set("keep", [...state.teamLock].join(","));
-  if (state.exclude.size) params.set("exclude", [...state.exclude].join(","));
-  if (state.excludeTeams.size) params.set("exclude_teams", [...state.excludeTeams].join(","));
-  if (state.include.size) params.set("include", [...state.include].join(","));
+  applyBuilderConstraints(params);
   const data = await (await fetch(`/api/rebuild?${params}`)).json();
   if (!data.ok) {
     $("transfer-board").innerHTML = `<p class="empty">${data.error || "Could not rebuild squad."}</p>`;
@@ -1378,6 +1658,122 @@ async function rebuildChip(chip) {
     <div class="transfer-move">${names}</div>
     <div class="card-actions"><button type="button" data-apply-rebuild='${JSON.stringify(data.ids)}' data-bank-after="${data.bank_after}">Apply ${chip === "freehit" ? "FH" : "WC"} 15</button></div>
   </div>`;
+}
+
+async function loadWildcardAdvice() {
+  saveMyTeam();
+  const board = $("wildcard-board");
+  if (!board) return;
+  if (state.myTeam.length !== 15) {
+    board.innerHTML = `<p class="empty">Need a full 15-man squad for wildcard advice (currently ${state.myTeam.length}).</p>`;
+    return;
+  }
+  board.innerHTML = `<p class="empty">Scoring rest-of-season look-aheads and building wildcard 15s… this can take a bit.</p>`;
+  const params = new URLSearchParams({
+    season: state.season,
+    as_of: String(state.asOf),
+    squad: state.myTeam.join(","),
+    bank: $("team-bank").value || "0",
+    budget: ($("team-budget") && $("team-budget").value) || "100",
+    ft: $("team-ft").value || "1",
+  });
+  applyBuilderConstraints(params);
+  if (state.chipsUsed && state.chipsUsed.length) params.set("chips", state.chipsUsed.join(","));
+  try {
+    const res = await fetch(`/api/wildcard?${params}`);
+    const data = await res.json();
+    renderWildcardAdvice(data);
+  } catch (err) {
+    board.innerHTML = `<p class="empty">${err.message || "Wildcard advice failed."}</p>`;
+  }
+}
+
+function renderWildcardAdvice(data) {
+  const board = $("wildcard-board");
+  if (!board) return;
+  if (!data.ok) {
+    board.innerHTML = `<p class="empty">${data.error || "Could not score a wildcard."}</p>`;
+    return;
+  }
+  const v = data.verdict || "consider";
+  const rows = (data.windows || [])
+    .map(
+      (w) => `<tr class="${w.rest_of_season ? "wc-ros" : ""}">
+        <td>${w.label || w.gws + " GW"}</td>
+        <td>${fmt(w.current_xi, 1)}</td>
+        <td>${fmt(w.wc_xi, 1)}</td>
+        <td>${signed(w.gain)}</td>
+        <td>${signed(w.gain_adj)}</td>
+        <td>${fmt(w.ft_path_xi, 1)}</td>
+        <td>${signed(w.ft_gap)}</td>
+        <td class="wc-conf">${w.confidence || ""}</td>
+      </tr>`
+    )
+    .join("");
+  const reasons = (data.reasons || []).map((r) => `<li>${r}</li>`).join("");
+  const sells = (data.must_sell || [])
+    .map((p) => `<span class="chip"><span class="nm">${p.web_name}</span><span class="dt">${p.reason}</span></span>`)
+    .join("");
+  const near = (data.stress || []).slice(0, 8);
+  const later = (data.stress || [])
+    .slice(8)
+    .filter((s) => s.blanks >= 2)
+    .sort((a, b) => b.blanks - a.blanks)
+    .slice(0, 4);
+  const stressBits = [...near, ...later.filter((s) => !near.some((n) => n.event === s.event))];
+  const stress = stressBits
+    .map((s) => `<span class="fx-chip ${s.blanks >= 3 ? "hard" : s.blanks >= 2 ? "mid" : "easy"}"><span class="gw">GW${s.event}</span>${fmt(s.xi_xpts, 1)}${s.blanks ? ` · ${s.blanks} weak` : ""}</span>`)
+    .join("");
+  const delayRow = (data.delays || [])
+    .map(
+      (d) =>
+        `<span class="fx-chip ${d.best ? "easy" : "mid"}">${d.delay === 0 ? "Now" : "GW" + d.play_event}${d.best ? " · best" : ""} ${signed(d.delta_vs_now)}</span>`
+    )
+    .join("");
+  const stints = (data.stints || [])
+    .map(
+      (s) =>
+        `<span class="chip"><span class="nm">${s.web_name}</span><span class="dt">${s.reason || "stint"} · £${fmt(s.price)}</span></span>`
+    )
+    .join("");
+  const names = (data.squad || []).map((p) => p.web_name).join(", ");
+  const apply =
+    data.ids && data.ids.length === 15 && v !== "used"
+      ? `<div class="card-actions"><button type="button" data-apply-rebuild='${JSON.stringify(data.ids)}' data-bank-after="${data.bank_after || 0}">Apply WC 15</button></div>`
+      : "";
+  const waitBit = data.wait_until_gw ? ` · hold until GW${data.wait_until_gw}` : "";
+  const extra =
+    data.only_long && data.only_long.length
+      ? `<p class="stat-note">8GW core names not in this 15: ${data.only_long.join(", ")}</p>`
+      : "";
+  board.innerHTML = `
+    <div class="wc-verdict ${v}">
+      <b>${data.headline || "Wildcard"}</b>${waitBit}
+      <ul class="wc-reasons">${reasons}</ul>
+    </div>
+    <p class="stat-note">${data.note || ""} · ${data.n_out != null ? data.n_out + " moves vs this WC 15" : ""}</p>
+    <table class="wc-table">
+      <thead><tr><th>Look-ahead</th><th>Your XI</th><th>WC XI</th><th>Gain</th><th>Adj gain</th><th>FT-only</th><th>WC vs FTs</th><th>Trust</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="stat-note">WC XI is this fixed 15, week by week (stints stay in the squad; later FTs are not scripted). Play/wait uses ~5 GWs. 8+ GW is core shape. FT-only = 1 transfer/week from your current 15, no hits.</p>
+    ${delayRow ? `<h4 class="wc-h">When to fire (weighted XI vs playing now)</h4><div class="fx-row">${delayRow}</div>` : ""}
+    ${stress ? `<h4 class="wc-h">Your XI by week</h4><div class="fx-row">${stress}</div>` : ""}
+    ${sells ? `<h4 class="wc-h">Likely outs</h4><div class="xi-line" style="justify-content:flex-start">${sells}</div>` : ""}
+    ${stints ? `<h4 class="wc-h">Fixture stints in this 15</h4><div class="xi-line" style="justify-content:flex-start">${stints}</div>` : ""}
+    ${extra}
+    ${names ? `<div class="transfer-card" style="margin-top:.8rem"><div><b>Wildcard 15</b> · ${data.hold_gws || 3}GW hold · ${data.core_gws || 8}GW core · £${fmt(data.spent)}${data.max_value != null ? ` / max £${fmt(data.max_value)}` : ""} · bank £${fmt(data.bank_after)} · ${data.formation || ""}</div><div class="transfer-move">${names}</div>${apply}</div>` : ""}
+  `;
+}
+
+function applyBuilderConstraints(params) {
+  if (state.exclude.size) params.set("exclude", [...state.exclude].join(","));
+  if (state.excludeTeams.size) params.set("exclude_teams", [...state.excludeTeams].join(","));
+  if (state.include.size) params.set("include", [...state.include].join(","));
+  if (state.lock.size) params.set("lock", [...state.lock].join(","));
+  if (state.teamLock.size) params.set("keep", [...state.teamLock].join(","));
+  const mv = $("wc-max-value") && $("wc-max-value").value;
+  if (mv) params.set("max_value", mv);
 }
 
 function applyRebuild(ids, bankAfter) {
@@ -1404,6 +1800,7 @@ function setTab(tab) {
   }
   if (tab === "team") {
     renderMyTeam();
+    renderExcludePanel();
   }
   if (tab === "fixtures") renderFixtures();
 }
@@ -1480,6 +1877,13 @@ function onRowClick(e) {
     toggleLock(lockBtn.dataset.lock, e);
     return;
   }
+  const compareBtn = e.target.closest("[data-compare]");
+  if (compareBtn) {
+    const cid = Number(compareBtn.dataset.compare);
+    state.compareId = Number(state.compareId) === cid ? null : cid;
+    if (state.selected) selectPlayer(state.selected);
+    return;
+  }
   const row = e.target.closest(".row");
   if (row) selectPlayer(Number(row.dataset.id));
   const chipEl = e.target.closest(".chip[data-id]");
@@ -1499,6 +1903,8 @@ if ($("xi-include-list")) $("xi-include-list").addEventListener("click", onRowCl
 if ($("xi-lock-list")) $("xi-lock-list").addEventListener("click", onRowClick);
 $("team-board").addEventListener("click", onRowClick);
 $("transfer-board").addEventListener("click", onRowClick);
+if ($("wildcard-board")) $("wildcard-board").addEventListener("click", onRowClick);
+if ($("wc-constraints")) $("wc-constraints").addEventListener("click", onRowClick);
 $("transfer-board").addEventListener("input", (e) => {
   if (e.target.id !== "xfer-search") return;
   state.xferQ = e.target.value;
@@ -1566,6 +1972,20 @@ if ($("xi-exclude-club-add")) {
     if (!state.excludeTeams.has(tid)) toggleExcludeTeam(tid);
   });
 }
+if ($("wc-exclude-club-add")) {
+  $("wc-exclude-club-add").addEventListener("click", () => {
+    const sel = $("wc-exclude-club");
+    if (!sel || !sel.value) return;
+    const tid = Number(sel.value);
+    if (!state.excludeTeams.has(tid)) toggleExcludeTeam(tid);
+  });
+}
+if ($("wc-player-q")) {
+  $("wc-player-q").addEventListener("input", () => {
+    clearTimeout(state.wcT);
+    state.wcT = setTimeout(refreshWcCands, 150);
+  });
+}
 $("team-import").addEventListener("click", importFplTeam);
 $("team-lineup").addEventListener("click", optimiseLineup);
 if ($("team-event")) {
@@ -1575,7 +1995,11 @@ if ($("team-event")) {
 }
 $("team-suggest").addEventListener("click", suggestTransfers);
 if ($("team-wildcard")) $("team-wildcard").addEventListener("click", () => rebuildChip("wildcard"));
+if ($("team-wildcard-advice")) $("team-wildcard-advice").addEventListener("click", loadWildcardAdvice);
 if ($("team-freehit")) $("team-freehit").addEventListener("click", () => rebuildChip("freehit"));
+if ($("team-bboost")) $("team-bboost").addEventListener("click", () => optimiseLineup("bboost"));
+if ($("team-3xc")) $("team-3xc").addEventListener("click", () => optimiseLineup("3xc"));
+if ($("team-chips")) $("team-chips").addEventListener("click", scanChips);
 $("team-clear").addEventListener("click", () => {
   state.myTeam = [];
   state.teamLock = new Set();
@@ -1584,12 +2008,29 @@ $("team-clear").addEventListener("click", () => {
   saveMyTeam();
   renderMyTeam();
   $("transfer-board").innerHTML = `<p class="empty">Transfer suggestions appear here.</p>`;
+  if ($("wildcard-board"))
+    $("wildcard-board").innerHTML = `<p class="empty">Wildcard advice builds a 15 for the next 3–5 GWs, with a soft 8GW core. Later weeks are left to ordinary FTs.</p>`;
 });
-["team-bank", "team-budget", "team-ft", "team-want", "team-entry"].forEach((id) => {
+["team-bank", "team-budget", "team-ft", "team-want", "team-entry", "wc-max-value"].forEach((id) => {
   const el = $(id);
   if (el) el.addEventListener("change", saveMyTeam);
 });
 bindPills("pos-pills", "pos", "position");
 bindPills("action-pills", "action", "action");
+if ($("horizon-pills")) {
+  $("horizon-pills").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-horizon]");
+    if (!btn) return;
+    state.horizonMode = btn.dataset.horizon || "window";
+    $("horizon-pills").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
+    setHorizonNote();
+    if (state.sort === "xpts" || state.sort === "xpts_next") {
+      state.sort = state.horizonMode === "next" ? "xpts_next" : "xpts";
+      if ($("sort")) $("sort").value = state.sort;
+    }
+    if (state.tab === "players") loadPlayers();
+    else if (state.tab === "shortlist") renderShortlist();
+  });
+}
 
 loadMeta().then(loadPlayers);

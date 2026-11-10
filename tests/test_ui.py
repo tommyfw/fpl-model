@@ -147,6 +147,19 @@ def test_lineup_event_clamps_to_horizon():
     assert queries._lineup_event(3, 1, 5) == 3
 
 
+def test_archive_scores_survive_wipe():
+    from fpl_model.db import archive_score_player_asof
+
+    conn = _conn()
+    n = archive_score_player_asof(conn, "2026-27")
+    assert n >= 1
+    conn.execute("DELETE FROM score_player_asof WHERE season = '2026-27'")
+    hist = conn.execute(
+        "SELECT web_name FROM score_player_asof_hist WHERE season = '2026-27' AND as_of_gw = 2 AND fpl_id = 1"
+    ).fetchone()
+    assert hist["web_name"] == "Haaland"
+
+
 
 def test_player_stats_prefer_understat_totals():
     from fpl_model.config import load_settings
@@ -174,3 +187,54 @@ def test_player_stats_prefer_understat_totals():
     assert st["npxa"] == 0.0
     assert st["npxg90"] == 0.27
     assert st["rate_weight"] == 0.17
+
+
+def test_calibration_nudge_and_last_week():
+    conn = _conn()
+    conn.execute(
+        """INSERT INTO fact_calibrate_asof(season, as_of_gw, n, mae, bias, unmatched, breakdown_json, computed_at)
+           VALUES ('2026-27', 1, 10, 1.0, -0.4, 0, ?, 't')""",
+        (json.dumps({"by_position": [{"position": "FWD", "bias": -0.8, "n": 10}]}),),
+    )
+    conn.execute(
+        """INSERT INTO fact_fpl_player_gw(season, fpl_id, round, total_points, minutes)
+           VALUES ('2026-27', 1, 1, 8, 90)"""
+    )
+    conn.execute(
+        """INSERT INTO score_player_asof(
+            season, as_of_gw, fpl_id, position, team_id, web_name,
+            U, F, R, T, Q, M, O, V, overall, upside, xpts, action, card_json
+        ) VALUES ('2026-27', 1, 1, 'FWD', 1, 'Haaland', 0,0,0,0,0,0,0,0,70,50,6,'BUY', ?)""",
+        (json.dumps({"xpts_next": 5.0}),),
+    )
+    conn.execute(
+        "UPDATE score_player_asof SET card_json = ? WHERE season = '2026-27' AND as_of_gw = 2 AND fpl_id = 1",
+        (json.dumps({"overall": 74.9, "upside": 55.0, "action": "BUY", "xpts_next": 5.0}),),
+    )
+    conn.commit()
+    p = queries.get_player(conn, "2026-27", 2, 1)
+    assert p["cal_nudge"] == 0.4
+    assert p["xpts_next_raw"] == 5.0
+    assert p["xpts_next"] == 5.4
+    assert p["last_week"]["raw"] is True
+    assert p["last_week"]["event"] == 1
+    assert p["last_week"]["pred"] == 5.0
+    assert p["last_week"]["actual"] == 8
+    tmpl = queries.template_vs_squad(queries.list_players(conn, "2026-27", 2), [1])
+    assert tmpl["you_owned_avg"] is not None
+
+
+def test_calibration_nudge_blends_reliability_bin():
+    cal = {
+        "by_position": [{"position": "FWD", "bias": -0.8}],
+        "table": [
+            {
+                "bin": "[4.5, 5.5]",
+                "n": 30,
+                "pred_mean": 5.0,
+                "actual_mean": 4.0,
+                "bias": 1.0,
+            }
+        ],
+    }
+    assert queries.calibration_nudge(cal, "FWD", 5.0) == -0.05

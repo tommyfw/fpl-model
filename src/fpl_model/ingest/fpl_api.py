@@ -7,7 +7,7 @@ import httpx
 import pandas as pd
 
 from fpl_model.config import Settings, load_settings
-from fpl_model.db import connect, init_db
+from fpl_model.db import archive_score_player_asof, connect, init_db
 from fpl_model.ingest.vaastav import GW_COLS, POSITION_MAP, _norm_position, _to_sql
 
 FPL_API = "https://fantasy.premierleague.com/api"
@@ -77,6 +77,33 @@ def next_as_of_gw(boot: dict) -> int:
     if unfinished:
         return min(unfinished)
     return max(int(e["id"]) for e in events)
+
+
+def fixture_is_done(row) -> bool:
+    """Treat a fixture as done if FPL finished it, both scores exist, or kickoff is ~115m ago.
+
+    FPL often leaves ``finished=false`` for hours after FT while scores (including 0-0) are set.
+    """
+    if int(row.get("finished") or 0) == 1:
+        return True
+    hs, ascore = row.get("team_h_score"), row.get("team_a_score")
+    if hs is not None and ascore is not None and pd.notna(hs) and pd.notna(ascore):
+        return True
+    ko = pd.to_datetime(row.get("kickoff_time"), utc=True, errors="coerce")
+    if pd.notna(ko) and pd.Timestamp.now(tz="UTC") >= ko + pd.Timedelta(minutes=115):
+        return True
+    return False
+
+
+def mark_fixtures_done(fixtures: pd.DataFrame) -> pd.DataFrame:
+    """Set ``finished=1`` on rows that already have a result or a past kickoff."""
+    if fixtures.empty:
+        return fixtures
+    out = fixtures.copy()
+    done = out.apply(fixture_is_done, axis=1)
+    prev = pd.to_numeric(out.get("finished"), errors="coerce").fillna(0).astype(int)
+    out["finished"] = (done | (prev == 1)).astype(int)
+    return out
 
 
 def round_results_ready(conn, season: str, gw: int) -> bool:
@@ -262,6 +289,7 @@ def load_entry_team(entry_id: int, settings: Settings | None = None, force: bool
 
 
 def _clear_fpl_facts(conn, season: str) -> None:
+    archive_score_player_asof(conn, season)
     for table in (
         "score_player_asof",
         "feat_player_asof",
@@ -288,8 +316,8 @@ def gw_rows_from_live(
     fixtures: pd.DataFrame,
     elements: pd.DataFrame,
 ) -> list[dict]:
-    """One row per player-fixture for a finished GW. Unfinished fixtures are skipped."""
-    fx_e = fixtures.loc[fixtures["event"] == event]
+    """One row per player-fixture for a played GW. Unfinished, unscored fixtures are skipped."""
+    fx_e = mark_fixtures_done(fixtures.loc[fixtures["event"] == event].copy())
     finished_ids = set(fx_e.loc[fx_e["finished"] == 1, "fixture_id"].tolist())
     team_of = dict(zip(elements["fpl_id"], elements["team_id"]))
     now_cost = dict(zip(elements["fpl_id"], elements["now_cost"]))
@@ -369,6 +397,7 @@ def load_live_season(season: str | None = None, settings: Settings | None = None
         }
     )
     fixtures["event"] = pd.to_numeric(fixtures["event"], errors="coerce")
+    fixtures = mark_fixtures_done(fixtures)
 
     finished_events = sorted(
         {
@@ -377,7 +406,7 @@ def load_live_season(season: str | None = None, settings: Settings | None = None
             if e.get("finished") or (e.get("is_current") and e.get("data_checked"))
         }
     )
-    # also include any fixture-finished events not marked on the event object
+    # include GWs with scores / past kickoff even when FPL still has finished=false
     fx_done = fixtures.loc[fixtures["finished"] == 1, "event"].dropna().astype(int).unique().tolist()
     events_to_load = sorted(set(finished_events) | set(int(x) for x in fx_done if pd.notna(x)))
 

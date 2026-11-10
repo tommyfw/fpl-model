@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sqlite3
 from typing import Any
 
@@ -24,6 +25,7 @@ from fpl_model.scoring.clean_sheet import (
     pack_match_for_team,
 )
 from fpl_model.squad.transfers import annotate_fixture_flags, rebuild_on_chip, suggest_transfers
+from fpl_model.squad.wildcard import MAX_WC_HORIZON, PERSIST, advise_wildcard, clip_windows
 
 
 def available_snapshots(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -104,6 +106,7 @@ def list_players(
         "overall": "s.overall",
         "upside": "s.upside",
         "xpts": "s.xpts",
+        "xpts_next": "CAST(json_extract(s.card_json, '$.xpts_next') AS REAL)",
         "value": "s.V",
         "quality": "s.Q",
         "minutes": "s.M",
@@ -155,7 +158,12 @@ def list_players(
     """
     params.append(int(limit))
     rows = conn.execute(sql, params).fetchall()
-    return [_player_row(r) for r in rows]
+    cal = _calibration_for_nudge(conn, season, as_of_gw)
+    out = [_apply_cal_nudge(_player_row(r), cal) for r in rows]
+    lw = last_week_map(conn, season, as_of_gw, [p["fpl_id"] for p in out])
+    for p in out:
+        p["last_week"] = lw.get(int(p["fpl_id"]))
+    return out
 
 
 def get_player(conn: sqlite3.Connection, season: str, as_of_gw: int, fpl_id: int) -> dict[str, Any] | None:
@@ -185,6 +193,14 @@ def get_player(conn: sqlite3.Connection, season: str, as_of_gw: int, fpl_id: int
     out = _player_row(row)
     card = json.loads(row["card_json"]) if row["card_json"] else {}
     out["card"] = card
+    if out.get("xpts_next") is None and card.get("xpts_next") is not None:
+        out["xpts_next"] = _round(card.get("xpts_next"), 2)
+    if out.get("xpts_gws") is None:
+        out["xpts_gws"] = _parse_xpts_gws(card.get("xpts_gws"))
+    if not out.get("minutes_risk") and isinstance(card.get("minutes_risk"), dict):
+        out["minutes_risk"] = card.get("minutes_risk")
+    if out.get("availability") is None and card.get("availability") is not None:
+        out["availability"] = _round(card.get("availability"), 3)
     out["first_name"] = row["first_name"]
     out["second_name"] = row["second_name"]
     out["penalties_order"] = row["penalties_order"]
@@ -218,6 +234,9 @@ def get_player(conn: sqlite3.Connection, season: str, as_of_gw: int, fpl_id: int
             pos_slot_rank=feats.get("pos_slot_rank"),
             start_pct_l5=feats.get("start_pct_l5"),
         )
+    cal = _calibration_for_nudge(conn, season, as_of_gw)
+    out = _apply_cal_nudge(out, cal)
+    out["last_week"] = last_week_outcome(conn, season, as_of_gw, int(row["fpl_id"]))
     return out
 
 
@@ -323,6 +342,10 @@ def _player_stats(feats: dict[str, Any], settings: Settings | None = None) -> di
         "rate_weight": rate_weight,
         "defcon_hit_rate": num("defcon_hit_rate", 2),
         "appearances": num("appearances", 0),
+        "psxg": num("psxg", 2),
+        "psxg_net": num("psxg_net", 2),
+        "psxg_net90": num("psxg_net90", 2),
+        "shot_stopping": num("shot_stopping", 2),
     }
 
 
@@ -776,6 +799,7 @@ def lineup_for_squad(
     squad_ids: list[int],
     *,
     event: int | None = None,
+    chip: str | None = None,
     settings: Settings | None = None,
 ) -> dict[str, Any]:
     """Best legal starting XI from a saved 15, using one GW's fixtures (T, T+1, …)."""
@@ -838,6 +862,7 @@ def lineup_for_squad(
 
     team_ids = [p.get("team_id") for p in by_id.values() if p.get("team_id") is not None]
     fx_by_team = _gw_fixture_labels(conn, season, target, team_ids)
+    cal = _calibration_for_nudge(conn, season, as_of_gw)
 
     squad: list[dict[str, Any]] = []
     for fid in ids:
@@ -846,12 +871,22 @@ def lineup_for_squad(
             empty["error"] = "scores missing for some squad players"
             return empty
         row = dict(p)
-        row["xpts_gw"] = round(float(xmap.get(int(fid), 0.0)), 2)
+        raw_gw = float(xmap.get(int(fid), 0.0))
+        nudge = calibration_nudge(cal, row.get("position"), raw_gw)
+        row["xpts_gw_raw"] = round(raw_gw, 2)
+        row["xpts_gw"] = round(raw_gw + nudge, 2)
+        row["cal_nudge"] = nudge
         tid = row.get("team_id")
         row["fixture"] = fx_by_team.get(int(tid), "BLANK") if tid is not None else "BLANK"
         squad.append(row)
 
     pack = pick_xi(squad, objective="xpts_gw")
+    from fpl_model.squad.chips import apply_chip
+
+    chip_name = str(chip or "").lower()
+    placed = None
+    if chip_name in {"bboost", "3xc"}:
+        placed = apply_chip(squad, chip_name, objective="xpts_gw")
 
     def slim(p: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -868,9 +903,21 @@ def lineup_for_squad(
             "action": p.get("action"),
             "availability": p.get("availability"),
             "minutes_risk": p.get("minutes_risk"),
+            "selected_by_percent": p.get("selected_by_percent"),
         }
 
     cap = pack.get("captain")
+    vice = pack.get("vice_captain")
+    xi_objective = pack["xi_objective"]
+    if placed and placed.get("ok"):
+        xi_objective = placed["xi_objective"]
+        cap = placed.get("captain") or cap
+    pool = list_players(conn, season, as_of_gw, sort="xpts", limit=400)
+    fh_pool = list_players(conn, season, as_of_gw, sort="xpts_next", limit=500)
+    from fpl_model.squad.chips import freehit_indicator, scan_chip_weeks
+
+    scan = scan_chip_weeks(squad, as_of_gw=as_of_gw)
+    scan["freehit"] = freehit_indicator(squad, fh_pool, as_of_gw=as_of_gw)
     return {
         "ok": bool(pack.get("xi")),
         "season": season,
@@ -879,12 +926,23 @@ def lineup_for_squad(
         "offset": offset,
         "horizon_gws": 1,
         "objective": "xpts_gw",
+        "chip": chip_name or None,
+        "include_bench": bool(placed and placed.get("include_bench")),
+        "triple": bool(placed and placed.get("triple")),
+        "chip_reason": (placed or {}).get("reason"),
         "formation": pack["formation"],
-        "xi_objective": pack["xi_objective"],
+        "xi_objective": xi_objective,
         "captain": slim(cap) if cap else None,
+        "vice_captain": slim(vice) if vice else None,
+        "captain_ev": pack.get("captain_ev"),
+        "vice_ev": pack.get("vice_ev"),
+        "triple_ev": pack.get("triple_ev"),
+        "captain_xpts": pack.get("captain_xpts"),
         "xi": [slim(p) for p in pack["xi"]],
         "bench": [slim(p) for p in pack["bench"]],
         "squad": [slim(p) for p in squad],
+        "chip_scan": scan,
+        "template": template_vs_squad(pool, ids),
     }
 
 
@@ -926,13 +984,14 @@ def _enrich_transfer_players(
             cards[int(r["fpl_id"])] = json.loads(r["card_json"] or "{}")
         except json.JSONDecodeError:
             cards[int(r["fpl_id"])] = {}
+    cal = _calibration_for_nudge(conn, season, as_of_gw)
     for p in players:
         fid = int(p["fpl_id"])
         f = feats.get(fid) or {}
         c = cards.get(fid) or {}
         p["availability"] = c.get("availability", f.get("availability", 1.0))
         p["availability_horizon"] = c.get("availability_horizon", f.get("availability_horizon", p["availability"]))
-        p["xpts_next"] = c.get("xpts_next")
+        p["xpts_next"] = c.get("xpts_next") if c.get("xpts_next") is not None else p.get("xpts_next")
         p["xpts_gws"] = c.get("xpts_gws") or p.get("xpts_gws")
         p["fixtures_json"] = f.get("fixtures_json", "{}")
         p["price_change"] = f.get("price_change", 0.0)
@@ -950,6 +1009,7 @@ def _enrich_transfer_players(
             starts=f.get("starts"),
             appearances=f.get("appearances"),
         )
+        _apply_cal_nudge(p, cal)
     annotate_fixture_flags(players, horizon_gws)
 
 
@@ -991,8 +1051,13 @@ def transfers_for_squad(
         want_transfers=want_transfers,
         committed=committed,
     )
+    from fpl_model.squad.chips import freehit_indicator, scan_chip_weeks
+
     result["season"] = season
     result["as_of_gw"] = as_of_gw
+    scan = scan_chip_weeks(squad, as_of_gw=as_of_gw)
+    scan["freehit"] = freehit_indicator(squad, pool, as_of_gw=as_of_gw)
+    result["chip_scan"] = scan
     result["squad"] = [
         {
             "fpl_id": p["fpl_id"],
@@ -1028,6 +1093,8 @@ def rebuild_for_squad(
     exclude_teams: list[int] | None = None,
     include: list[int] | None = None,
     keep: list[int] | None = None,
+    lock: list[int] | None = None,
+    max_value: float | None = None,
 ) -> dict[str, Any]:
     settings = settings or load_settings()
     pool = list_players(conn, season, as_of_gw, sort="xpts" if objective == "combined" else objective, limit=2000)
@@ -1042,9 +1109,11 @@ def rebuild_for_squad(
         budget=budget,
         objective=objective,
         keep=keep,
+        lock=lock,
         exclude=exclude,
         exclude_teams=exclude_teams,
         include=include,
+        max_value=max_value,
     )
     result["season"] = season
     result["as_of_gw"] = as_of_gw
@@ -1070,6 +1139,103 @@ def rebuild_for_squad(
         cap = result.get("captain")
         result["captain"] = slim(cap) if cap else None
         result["ids"] = [p["fpl_id"] for p in result["squad"]]
+    return result
+
+
+def wildcard_for_squad(
+    conn: sqlite3.Connection,
+    season: str,
+    as_of_gw: int,
+    squad_ids: list[int],
+    *,
+    bank: float = 0.0,
+    budget: float = 100.0,
+    settings: Settings | None = None,
+    exclude: list[int] | None = None,
+    exclude_teams: list[int] | None = None,
+    include: list[int] | None = None,
+    keep: list[int] | None = None,
+    lock: list[int] | None = None,
+    max_value: float | None = None,
+    chips_used: list[str] | None = None,
+    free_transfers: int = 1,
+) -> dict[str, Any]:
+    """Score current 15 vs wildcard 15s on 1/3/5/8/13/20/26/rest-of-season look-aheads."""
+    from dataclasses import replace
+
+    from fpl_model.config import load_weights
+    from fpl_model.features.asof import attach_horizon_fixtures
+    from fpl_model.scoring.engine import load_feats
+    from fpl_model.scoring.xpts import compute_xpts_weeks
+
+    settings = settings or load_settings()
+    if len(squad_ids) != 15:
+        return {"ok": False, "error": f"need a full 15-man squad (currently {len(set(squad_ids))})", "squad": []}
+    fx = pd.read_sql_query(
+        "SELECT event, team_h, team_a FROM fact_fixture WHERE season = ? AND event IS NOT NULL",
+        conn,
+        params=(season,),
+    )
+    if fx.empty:
+        return {"ok": False, "error": "no fixtures in the DB", "squad": []}
+    max_ev = int(pd.to_numeric(fx["event"], errors="coerce").max())
+    remaining = max(1, max_ev - int(as_of_gw) + 1)
+    cap = min(MAX_WC_HORIZON, remaining)
+    windows = clip_windows(cap)
+    feats = load_feats(conn, season, as_of_gw)
+    if feats.empty:
+        return {"ok": False, "error": "no features for this as-of", "squad": []}
+    feats = attach_horizon_fixtures(feats, fx, as_of_gw, cap)
+    weeks = compute_xpts_weeks(feats, load_weights(), replace(settings, horizon_gws=cap))
+    by_fid: dict[int, list[float]] = {}
+    for idx, row in weeks.iterrows():
+        fid = int(feats.loc[idx, "fpl_id"])
+        by_fid[fid] = [round(float(v), 3) for v in row.tolist()]
+
+    pool = list_players(conn, season, as_of_gw, sort="xpts", limit=2000)
+    _enrich_transfer_players(conn, season, as_of_gw, pool, cap)
+    for p in pool:
+        xs = by_fid.get(int(p["fpl_id"]))
+        if xs:
+            p["xpts_gws"] = xs
+            p["xpts_next"] = xs[0]
+            p["xpts"] = float(sum(xs[: settings.horizon_gws]))
+    by_id = {p["fpl_id"]: p for p in pool}
+    squad = [by_id[i] for i in squad_ids if i in by_id]
+    if len(squad) != 15:
+        return {"ok": False, "error": "scores missing for some squad players", "squad": []}
+    result = advise_wildcard(
+        squad,
+        pool,
+        windows=windows,
+        bank=bank,
+        budget=budget,
+        keep=keep,
+        lock=lock,
+        exclude=exclude,
+        exclude_teams=exclude_teams,
+        include=include,
+        max_value=max_value,
+        chips_used=chips_used,
+        free_transfers=free_transfers,
+        as_of_gw=as_of_gw,
+    )
+    result["season"] = season
+    result["as_of_gw"] = as_of_gw
+    result["note"] = (
+        f"xPts here pack {cap} GWs of fixtures (stored cards stay on {settings.horizon_gws} GWs). "
+        "From ~8 GW out this is fixture-shape, not a forecast — later weeks are persistence-weighted "
+        f"({PERSIST:.2f}^week, floor 0.40). Play/wait uses the next 5 GWs; 8+ GW is core shape. "
+        "The WC 15 front-weights 3 GWs and may keep up to two cheap fixture stints — later weeks are left to ordinary FTs, with no planned transfers."
+    )
+    result["constraints"] = {
+        "exclude": list(exclude or []),
+        "exclude_teams": list(exclude_teams or []),
+        "include": list(include or []),
+        "keep": list(keep or []),
+        "lock": list(lock or []),
+        "max_value": None if max_value is None else round(float(max_value), 1),
+    }
     return result
 
 
@@ -1109,6 +1275,253 @@ def latest_calibration(conn: sqlite3.Connection, season: str, as_of_gw: int | No
         "unmatched": row["unmatched"],
         "computed_at": row["computed_at"],
         **breakdown,
+    }
+
+
+CAL_NUDGE_FRAC = 0.5
+CAL_NUDGE_CLIP = 0.8
+CAL_BIN_MIN_N = 25
+
+
+def _calibration_for_nudge(
+    conn: sqlite3.Connection, season: str, as_of_gw: int
+) -> dict[str, Any] | None:
+    prev = int(as_of_gw) - 1 if as_of_gw and int(as_of_gw) > 1 else None
+    cal = latest_calibration(conn, season, prev) if prev else None
+    if not cal:
+        cal = latest_calibration(conn, season, None)
+    return cal
+
+
+def _parse_cal_bin_bounds(raw: Any) -> tuple[float | None, float | None]:
+    if raw is None:
+        return None, None
+    text = str(raw)
+    nums = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", text)
+    if len(nums) >= 2:
+        return float(nums[0]), float(nums[1])
+    return None, None
+
+
+def _bias_nudge(bias: Any) -> float:
+    try:
+        v = -CAL_NUDGE_FRAC * float(bias)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(-CAL_NUDGE_CLIP, min(CAL_NUDGE_CLIP, v))
+
+
+def calibration_nudge(
+    cal: dict[str, Any] | None,
+    position: str | None,
+    xpts_next: float | None = None,
+) -> float:
+    """Shift this-GW xPts by −½ last bias (position, blended with reliability bin)."""
+    if not cal:
+        return 0.0
+    bias = None
+    pos = str(position or "").upper()
+    by_pos = cal.get("by_position") or []
+    if isinstance(by_pos, dict):
+        row = by_pos.get(pos) or by_pos.get(position) or {}
+        bias = row.get("bias") if isinstance(row, dict) else None
+    elif isinstance(by_pos, list):
+        for row in by_pos:
+            if not isinstance(row, dict):
+                continue
+            label = str(row.get("position") or row.get("label") or "").upper()
+            if label == pos:
+                bias = row.get("bias")
+                break
+    if bias is None:
+        bias = cal.get("bias")
+    pos_nudge = _bias_nudge(bias)
+    bin_nudge = None
+    if xpts_next is not None:
+        try:
+            x = float(xpts_next)
+        except (TypeError, ValueError):
+            x = None
+        table = cal.get("table") or []
+        if x is not None and isinstance(table, list):
+            hit = None
+            nearest = None
+            nearest_d = None
+            for row in table:
+                if not isinstance(row, dict) or int(row.get("n") or 0) < CAL_BIN_MIN_N:
+                    continue
+                lo, hi = _parse_cal_bin_bounds(row.get("bin"))
+                pm = row.get("pred_mean")
+                am = row.get("actual_mean")
+                b = row.get("bias")
+                if b is None and pm is not None and am is not None:
+                    try:
+                        b = float(pm) - float(am)
+                    except (TypeError, ValueError):
+                        b = None
+                if b is None:
+                    continue
+                if lo is not None and hi is not None and lo <= x <= hi:
+                    hit = b
+                    break
+                if pm is not None:
+                    d = abs(float(pm) - x)
+                    if nearest_d is None or d < nearest_d:
+                        nearest_d = d
+                        nearest = b
+            chosen = hit if hit is not None else nearest
+            if chosen is not None:
+                bin_nudge = _bias_nudge(chosen)
+    if bin_nudge is None:
+        return round(pos_nudge, 3)
+    return round(0.5 * pos_nudge + 0.5 * bin_nudge, 3)
+
+
+def _apply_cal_nudge(row: dict[str, Any], cal: dict[str, Any] | None) -> dict[str, Any]:
+    nxt = row.get("xpts_next")
+    nudge = calibration_nudge(cal, row.get("position"), nxt)
+    row["cal_nudge"] = nudge
+    if nxt is not None:
+        row["xpts_next_raw"] = nxt
+        row["xpts_next"] = round(float(nxt) + nudge, 2)
+    gws = row.get("xpts_gws")
+    if isinstance(gws, list) and gws:
+        raw0 = float(gws[0] or 0)
+        row["xpts_gws"] = [round(raw0 + nudge, 2)] + [float(x or 0) for x in gws[1:]]
+    return row
+
+
+def last_week_map(
+    conn: sqlite3.Connection, season: str, as_of_gw: int, fpl_ids: list[int]
+) -> dict[int, dict[str, Any]]:
+    pred_gw = int(as_of_gw) - 1
+    ids = [int(i) for i in fpl_ids]
+    if pred_gw < 1 or not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    actuals: dict[int, int] = {}
+    for r in conn.execute(
+        f"""
+        SELECT fpl_id, COALESCE(SUM(total_points), 0) AS pts
+        FROM fact_fpl_player_gw
+        WHERE season = ? AND round = ? AND fpl_id IN ({placeholders})
+        GROUP BY fpl_id
+        """,
+        (season, pred_gw, *ids),
+    ):
+        try:
+            actuals[int(r["fpl_id"])] = int(r["pts"] or 0)
+        except (TypeError, ValueError):
+            continue
+    preds: dict[int, float] = {}
+    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    for table in ("score_player_asof", "score_player_asof_hist"):
+        if table not in tables:
+            continue
+        missing = [i for i in ids if i not in preds]
+        if not missing:
+            break
+        ph = ",".join("?" * len(missing))
+        for r in conn.execute(
+            f"""
+            SELECT fpl_id, json_extract(card_json, '$.xpts_next') AS xpts_next
+            FROM {table}
+            WHERE season = ? AND as_of_gw = ? AND fpl_id IN ({ph})
+            """,
+            (season, pred_gw, *missing),
+        ):
+            if r["xpts_next"] is None:
+                continue
+            try:
+                preds[int(r["fpl_id"])] = round(float(r["xpts_next"]), 2)
+            except (TypeError, ValueError):
+                continue
+    out: dict[int, dict[str, Any]] = {}
+    for fid in ids:
+        pred = preds.get(fid)
+        actual = actuals.get(fid)
+        if pred is None and actual is None:
+            continue
+        out[fid] = {"event": pred_gw, "pred": pred, "actual": actual, "raw": True}
+    return out
+
+
+def last_week_outcome(
+    conn: sqlite3.Connection, season: str, as_of_gw: int, fpl_id: int
+) -> dict[str, Any] | None:
+    return last_week_map(conn, season, as_of_gw, [int(fpl_id)]).get(int(fpl_id))
+
+
+def template_vs_squad(pool: list[dict[str, Any]], squad_ids: list[int]) -> dict[str, Any]:
+    from fpl_model.squad.optimize import SQUAD_NEED
+
+    need = dict(SQUAD_NEED)
+    template: list[dict[str, Any]] = []
+    for p in sorted(pool, key=lambda x: -(x.get("selected_by_percent") or 0)):
+        pos = p.get("position")
+        if need.get(pos, 0) <= 0:
+            continue
+        need[pos] -= 1
+        template.append(p)
+        if sum(need.values()) == 0:
+            break
+    t_ids = {int(p["fpl_id"]) for p in template}
+    s_ids = {int(i) for i in squad_ids}
+    you = [p for p in pool if int(p["fpl_id"]) in s_ids]
+    diffs = [p for p in you if int(p["fpl_id"]) not in t_ids]
+    own_you = sum(float(p.get("selected_by_percent") or 0) for p in you) / max(1, len(you))
+    own_t = sum(float(p.get("selected_by_percent") or 0) for p in template) / max(1, len(template))
+    return {
+        "overlap": len(t_ids & s_ids),
+        "template_n": len(template),
+        "template_owned_avg": round(own_t, 1),
+        "you_owned_avg": round(own_you, 1),
+        "differentials": [
+            {
+                "fpl_id": p["fpl_id"],
+                "web_name": p["web_name"],
+                "position": p.get("position"),
+                "selected_by_percent": p.get("selected_by_percent"),
+            }
+            for p in sorted(diffs, key=lambda x: (x.get("selected_by_percent") or 99))[:8]
+        ],
+        "template": [
+            {
+                "fpl_id": p["fpl_id"],
+                "web_name": p["web_name"],
+                "position": p.get("position"),
+                "selected_by_percent": p.get("selected_by_percent"),
+            }
+            for p in template
+        ],
+    }
+
+
+def chips_for_squad(
+    conn: sqlite3.Connection,
+    season: str,
+    as_of_gw: int,
+    squad_ids: list[int],
+    *,
+    chips_used: list[str] | None = None,
+) -> dict[str, Any]:
+    from fpl_model.squad.chips import freehit_indicator, recommend_chips, scan_chip_weeks
+
+    ids = [int(i) for i in squad_ids]
+    players = list_players(conn, season, as_of_gw, sort="xpts", ids=ids)
+    by_id = {p["fpl_id"]: p for p in players}
+    squad = [by_id[i] for i in ids if i in by_id]
+    if len(squad) != 15:
+        return {"ok": False, "error": "need a full 15", "weeks": [], "chips": []}
+    scan = scan_chip_weeks(squad, as_of_gw=as_of_gw, chips_used=chips_used)
+    fh_pool = list_players(conn, season, as_of_gw, sort="xpts_next", limit=500)
+    scan["freehit"] = freehit_indicator(squad, fh_pool, as_of_gw=as_of_gw)
+    return {
+        "ok": True,
+        "season": season,
+        "as_of_gw": as_of_gw,
+        "chips": recommend_chips(squad, chips_used=chips_used, as_of_gw=as_of_gw),
+        **scan,
     }
 
 

@@ -50,6 +50,20 @@ def calibrate_asof(
         conn,
         params=(season, as_of_gw),
     )
+    if scores.empty:
+        hist = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='score_player_asof_hist'"
+        ).fetchone()
+        if hist:
+            scores = pd.read_sql_query(
+                """
+                SELECT fpl_id, position, team_id, xpts, card_json
+                FROM score_player_asof_hist
+                WHERE season = ? AND as_of_gw = ?
+                """,
+                conn,
+                params=(season, as_of_gw),
+            )
     actual = pd.read_sql_query(
         """
         SELECT fpl_id, total_points AS actual_next, minutes, was_home, opponent_team
@@ -185,6 +199,9 @@ def persist_calibration(conn: sqlite3.Connection, pack: dict) -> None:
         if isinstance(pack.get("table"), pd.DataFrame) and not pack["table"].empty
         else [],
     }
+    for row in breakdown["table"]:
+        if isinstance(row.get("bin"), pd.Interval):
+            row["bin"] = str(row["bin"])
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS fact_calibrate_asof (

@@ -13,6 +13,15 @@ from fpl_model.ui import queries
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
+def _opt_float(raw: str | None) -> float | None:
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
 def _int_list(raw: str) -> list[int]:
     if not raw or not raw.strip():
         return []
@@ -82,11 +91,17 @@ class UIHandler(SimpleHTTPRequestHandler):
         if path == "/api/rebuild":
             self._json(self._rebuild(qs))
             return
+        if path == "/api/wildcard":
+            self._json(self._wildcard(qs))
+            return
         if path == "/api/calibrate":
             self._json(self._calibrate(qs))
             return
         if path == "/api/fpl-team":
             self._json(self._fpl_team(qs))
+            return
+        if path == "/api/chips":
+            self._json(self._chips(qs))
             return
         if path in ("/", "/index.html"):
             self.path = "/index.html"
@@ -100,11 +115,17 @@ class UIHandler(SimpleHTTPRequestHandler):
         default = queries.default_snapshot(conn, preferred)
         clubs = queries.list_clubs(conn)
         conn.close()
+        season = (default or {}).get("season")
+        season_snaps = [s for s in snaps if not season or s["season"] == season]
+        official = next((s for s in season_snaps if not s.get("is_beta")), None)
+        beta = next((s for s in season_snaps if s.get("is_beta")), None)
         return {
             "snapshots": snaps,
             "default": default,
             "horizon_gws": self.settings.horizon_gws,
             "clubs": clubs,
+            "official_as_of": official,
+            "beta_as_of": beta,
         }
 
     def _players(self, qs: dict[str, str]) -> dict:
@@ -128,6 +149,7 @@ class UIHandler(SimpleHTTPRequestHandler):
             action=qs.get("action") or None,
             team_id=team_id,
             sort=qs.get("sort") or "xpts",
+            limit=int(qs["limit"]) if (qs.get("limit") or "").isdigit() else 400,
         )
         conn.close()
         return {"season": season, "as_of_gw": as_of, "players": players}
@@ -260,7 +282,13 @@ class UIHandler(SimpleHTTPRequestHandler):
         conn = connect(self.settings)
         try:
             return queries.lineup_for_squad(
-                conn, season, as_of, squad_ids, event=event, settings=self.settings
+                conn,
+                season,
+                as_of,
+                squad_ids,
+                event=event,
+                chip=qs.get("chip") or None,
+                settings=self.settings,
             )
         except Exception as exc:
             return {"ok": False, "error": f"lineup failed: {exc}", "xi": [], "bench": []}
@@ -301,9 +329,57 @@ class UIHandler(SimpleHTTPRequestHandler):
             exclude_teams=_int_list(qs.get("exclude_teams") or ""),
             include=_int_list(qs.get("include") or ""),
             keep=_int_list(qs.get("keep") or ""),
+            lock=_int_list(qs.get("lock") or ""),
+            max_value=_opt_float(qs.get("max_value")),
         )
         conn.close()
         return out
+
+    def _wildcard(self, qs: dict[str, str]) -> dict:
+        season, as_of = self._scope(qs)
+        if season is None:
+            return {"ok": False, "error": "no scores yet", "squad": []}
+        raw = qs.get("squad") or ""
+        try:
+            squad_ids = [int(x) for x in raw.split(",") if x.strip()]
+        except ValueError:
+            return {"ok": False, "error": "bad squad ids", "squad": []}
+        try:
+            bank = float(qs.get("bank") or 0)
+        except ValueError:
+            bank = 0.0
+        try:
+            budget = float(qs.get("budget") or 100)
+        except ValueError:
+            budget = 100.0
+        try:
+            ft = int(qs.get("ft") or 1)
+        except ValueError:
+            ft = 1
+        chips = [c.strip() for c in (qs.get("chips") or "").split(",") if c.strip()]
+        conn = connect(self.settings)
+        try:
+            return queries.wildcard_for_squad(
+                conn,
+                season,
+                as_of,
+                squad_ids,
+                bank=bank,
+                budget=budget,
+                exclude=_int_list(qs.get("exclude") or ""),
+                exclude_teams=_int_list(qs.get("exclude_teams") or ""),
+                include=_int_list(qs.get("include") or ""),
+                keep=_int_list(qs.get("keep") or ""),
+                lock=_int_list(qs.get("lock") or ""),
+                max_value=_opt_float(qs.get("max_value")),
+                chips_used=chips,
+                free_transfers=ft,
+                settings=self.settings,
+            )
+        except Exception as exc:
+            return {"ok": False, "error": f"wildcard advice failed: {exc}", "squad": []}
+        finally:
+            conn.close()
 
     def _calibrate(self, qs: dict[str, str]) -> dict:
         season, as_of = self._scope(qs)
@@ -329,6 +405,23 @@ class UIHandler(SimpleHTTPRequestHandler):
         if hasattr(tab, "to_dict"):
             pack["table"] = tab.to_dict(orient="records") if not tab.empty else []
         return pack
+
+    def _chips(self, qs: dict[str, str]) -> dict:
+        season, as_of = self._scope(qs)
+        if season is None:
+            return {"ok": False, "error": "no scores yet", "weeks": [], "chips": []}
+        try:
+            squad_ids = [int(x) for x in (qs.get("squad") or "").split(",") if x.strip()]
+        except ValueError:
+            return {"ok": False, "error": "bad squad ids", "weeks": [], "chips": []}
+        chips_used = [c.strip() for c in (qs.get("chips_used") or "").split(",") if c.strip()]
+        conn = connect(self.settings)
+        try:
+            return queries.chips_for_squad(
+                conn, season, as_of, squad_ids, chips_used=chips_used or None
+            )
+        finally:
+            conn.close()
 
     def _fpl_team(self, qs: dict[str, str]) -> dict:
         raw = qs.get("entry") or qs.get("id") or ""

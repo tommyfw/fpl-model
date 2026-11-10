@@ -68,5 +68,63 @@ def init_db(conn: sqlite3.Connection | None = None, settings: Settings | None = 
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS score_player_asof_hist (
+            season TEXT NOT NULL,
+            as_of_gw INTEGER NOT NULL,
+            fpl_id INTEGER NOT NULL,
+            position TEXT,
+            team_id INTEGER,
+            web_name TEXT,
+            U REAL,
+            F REAL,
+            R REAL,
+            T REAL,
+            Q REAL,
+            M REAL,
+            O REAL,
+            V REAL,
+            overall REAL,
+            upside REAL,
+            xpts REAL,
+            action TEXT,
+            card_json TEXT NOT NULL,
+            archived_at TEXT,
+            PRIMARY KEY (season, as_of_gw, fpl_id)
+        )
+        """
+    )
     conn.commit()
     return conn
+
+
+def archive_score_player_asof(conn: sqlite3.Connection, season: str) -> int:
+    """Copy live scores aside before ingest wipes ``score_player_asof``.
+
+    Calibration needs last week's snapshot; ``update`` deletes that table first.
+    """
+    init_db(conn)
+    n = conn.execute(
+        "SELECT COUNT(*) AS n FROM score_player_asof WHERE season = ?",
+        (season,),
+    ).fetchone()
+    count = int(n["n"] or 0) if n is not None else 0
+    if count <= 0:
+        return 0
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO score_player_asof_hist (
+            season, as_of_gw, fpl_id, position, team_id, web_name,
+            U, F, R, T, Q, M, O, V, overall, upside, xpts, action, card_json, archived_at
+        )
+        SELECT season, as_of_gw, fpl_id, position, team_id, web_name,
+               U, F, R, T, Q, M, O, V, overall, upside, xpts, action, card_json,
+               datetime('now')
+        FROM score_player_asof
+        WHERE season = ?
+        """,
+        (season,),
+    )
+    return count
+

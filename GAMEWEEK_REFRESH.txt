@@ -80,7 +80,9 @@ Wait until the tables show real numbers (not blank Opta cells), then save.
   Check that Att 3rd / Def 3rd have numbers. Possession % alone is a fallback.
 
 If the browser names the files like
-“Premier League Goalkeeper Stats _ FBref.com.html”, copy/rename them:
+“Premier League Goalkeeper Stats _ FBref.com.html”, leave them in Downloads.
+`fpl-model update` (and `fpl-model fbref`) copy the newest matching files into
+data/raw/fbref/2026-27/. Or copy/rename by hand:
 
   cp ~/Downloads/Premier\ League\ Player\ Stats\ _\ FBref.com.html \
     data/raw/fbref/2026-27/stats.html
@@ -94,8 +96,10 @@ If the browser names the files like
 
 2. Refresh FPL + Understat + FBref, then score
 ---------------------------------------------
-Save the four HTML files first, then one command (live FPL API, Understat,
-FBref from those files, features, score):
+Save the four HTML files first (Downloads is fine), then one command (live FPL API, Understat,
+FBref from those files, features, score). Fixtures with a score or a past kickoff are ingested
+even if FPL still has finished=false. Last week’s scores are archived so calibration can run
+after the wipe.
 
   fpl-model update
 
@@ -162,8 +166,10 @@ in GW T. For early-season rank quality on a prior season:
   fpl-model calibrate --season 2026-27 --as-of 2
   fpl-model early-check --season 2025-26
 
-Calibration is stored in the DB (and shown on the Fixtures tab). `update` also
-tries to calibrate the previous GW once official points are in.
+Calibration is stored in the DB (and shown on the Fixtures tab). `update` archives
+scores before wiping, then calibrates the previous GW from that archive once
+official points are in. On My team, Apply bench boost / Apply triple captain
+adds bench xPts or a third captain multiplier on the GW XI.
 
 If you already rescored as-of 2 after GW2 finished, that calibration leaks.
 Use a historical season, or scores you saved before that GW’s results.

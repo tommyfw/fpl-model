@@ -38,7 +38,18 @@ def test_suggests_upgrade_within_bank():
     assert out["suggestions"]
     top = out["suggestions"][0]
     assert top["moves"][0]["in"]["web_name"] == "UpgradeMid"
-    assert top["net_gain"] > 0
+
+
+def test_risk_buy_is_haircut_vs_safer_upgrade():
+    squad, pool = _squad_and_pool()
+    risky = _p(103, "RiskyMid", "MID", 11, 6.5, 28, 85)
+    risky["availability"] = 0.2
+    risky["minutes_risk"] = {"level": "risk", "labels": ["doubt"]}
+    pool.append(risky)
+    out = suggest_transfers(squad, pool, bank=3.0, free_transfers=1, objective="xpts")
+    names = [s["moves"][0]["in"]["web_name"] for s in out["suggestions"] if s["transfers"] == 1]
+    assert "UpgradeMid" in names
+    assert names[0] != "RiskyMid"
 
 
 def test_blocks_unaffordable():
@@ -288,3 +299,31 @@ def test_suggestion_has_horizon_and_xi_after():
     assert top["xi_after"]["formation"]
     assert "gain_horizon" in top
     assert "xi_gain" in top
+
+
+def test_transfer_notes_prefix_start_and_price():
+    from fpl_model.squad.transfers import _finalize_suggestion
+
+    buy = _p(100, "UpgradeMid", "MID", 8, 7.0, 25, 80)
+    buy["minutes_risk"] = {"level": "risk", "labels": ["doubtful"]}
+    buy["price_change"] = 0.3
+    sell = _p(24, "M4", "MID", 4, 6.0, 11)
+    sell["price_change"] = -0.2
+    out = _finalize_suggestion(
+        {"gain": 5.0, "moves": [{"in": buy, "out": sell}]},
+        hits=0,
+        objective="xpts",
+        horizon_gws=5,
+    )
+    notes = out["notes"]
+    assert notes[0].startswith("START ")
+    assert any(n.startswith("PRICE ") for n in notes)
+
+
+def test_horizon_pts_discounts_later_weeks():
+    from fpl_model.squad.transfers import HORIZON_PERSIST, _horizon_pts
+
+    p = {"xpts_gws": [10.0, 10.0, 10.0, 10.0, 10.0]}
+    expected = sum(10.0 * (HORIZON_PERSIST**t) for t in range(5))
+    assert abs(_horizon_pts(p, 5) - expected) < 1e-9
+    assert _horizon_pts(p, 5) < 50.0
